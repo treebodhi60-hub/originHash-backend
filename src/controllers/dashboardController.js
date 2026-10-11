@@ -1,5 +1,6 @@
-const { Op } = require('sequelize');
+const { Op, QueryTypes } = require('sequelize');
 const { ImageFolder, ImageAsset, QrBatch, QrCode, Scan, User } = require('../models');
+const { billingConfig, stickerUsage } = require('../services/stickerService');
 
 const ACTIVITY_DAYS = 14;
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -34,6 +35,8 @@ const getStats = async (req, res) => {
       scansByOutcome,
       scansByDay,
       recentBatches,
+      scansThisWeek,
+      [firstVerifications],
     ] = await Promise.all([
       User.count({ where: { isAdmin: false } }),
       User.count({ where: { isAdmin: false, isBlocked: true } }),
@@ -66,6 +69,26 @@ const getStats = async (req, res) => {
         order: [['createdAt', 'DESC']],
         limit: 5,
       }),
+      Scan.findAll({
+        where: { createdAt: { [Op.gte]: weekAgo } },
+        attributes: ['action', [Scan.sequelize.fn('COUNT', Scan.sequelize.col('id')), 'count']],
+        group: ['action'],
+        raw: true,
+      }),
+      // Each sticker's FIRST verification — the press that used it up (same rule as scanController's
+      // firstClaim). It's a success unless that verification was reported as a mismatch.
+      Scan.sequelize.query(
+        `SELECT COUNT(*) AS total,
+                COALESCE(SUM(s.result <> 'UNMATCHED'), 0) AS success,
+                COALESCE(SUM(s.result <> 'UNMATCHED' AND s.created_at >= :weekAgo), 0) AS successWeek
+         FROM scans s
+         JOIN (SELECT qr_code_id, MIN(id) AS first_id
+               FROM scans
+               WHERE action = 'verify' AND qr_code_id IS NOT NULL
+                 AND (result IN ('VERIFIED', 'MATCHED', 'UNMATCHED', 'AUTHENTIC') OR image_revealed_at IS NOT NULL)
+               GROUP BY qr_code_id) f ON f.first_id = s.id`,
+        { replacements: { weekAgo }, type: QueryTypes.SELECT }
+      ),
     ]);
 
     // Verification outcomes: matched / mismatch / flagged (unknown or already-revealed sticker) / abandoned.
@@ -94,6 +117,14 @@ const getStats = async (req, res) => {
       scans.verifications += count;
       scans.outcomes[OUTCOME_OF[row.result] || 'abandoned'] += count;
     }
+
+    const weekByAction = Object.fromEntries(scansThisWeek.map((row) => [row.action, Number(row.count)]));
+    scans.recordsLast7Days = weekByAction.record || 0;
+    scans.verificationsLast7Days = weekByAction.verify || 0;
+    // Stickers verified for the first time, and how many of those first verifications succeeded.
+    scans.firstVerifications = Number(firstVerifications?.total || 0);
+    scans.success = Number(firstVerifications?.success || 0);
+    scans.successLast7Days = Number(firstVerifications?.successWeek || 0);
 
     const perDay = new Map(scansByDay.map((row) => [row.day, Number(row.count)]));
     scans.daily = Array.from({ length: ACTIVITY_DAYS }, (_, i) => {
@@ -134,6 +165,18 @@ const getStats = async (req, res) => {
       },
       scans,
     };
+
+    // Sticker balances across every user: how many were bought, used, expired and are left.
+    if (billingConfig().enabled) {
+      const usage = await stickerUsage();
+      stats.stickers = {
+        expiringSoonDays: usage.expiringSoonDays,
+        users: usage.users.length,
+        usersWithExpired: usage.users.filter((u) => u.totals.expired > 0).length,
+        totals: usage.totals,
+        byPlan: usage.byPlan,
+      };
+    }
 
     if (req.user.isSuperAdmin) {
       const [totalAdmins, totalSuperAdmins] = await Promise.all([

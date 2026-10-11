@@ -42,4 +42,21 @@ const superAdminOnly = (req, res, next) => {
   next();
 };
 
-module.exports = { protect, adminOnly, superAdminOnly };
+// For public pages: attaches the signed-in user when a valid token comes along, and carries on
+// without one (or with an expired or blocked one) as a guest.
+const optionalAuth = async (req, res, next) => {
+  try {
+    const header = req.headers.authorization || '';
+    const token = header.startsWith('Bearer ') ? header.split(' ')[1] : null;
+    if (token) {
+      const decoded = jwt.verify(token, process.env.JWT_SECRET);
+      const user = await User.findByPk(decoded.id);
+      if (user && !user.isBlocked) req.user = user;
+    }
+  } catch {
+    // Not signed in, as far as this request is concerned.
+  }
+  next();
+};
+
+module.exports = { protect, optionalAuth, adminOnly, superAdminOnly };

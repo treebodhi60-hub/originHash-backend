@@ -84,6 +84,13 @@ const Scan = sequelize.define(
       field: 'location_name',
     },
     // Set on the one scan that revealed this sticker's image; a sticker's image is shown only once, ever.
+    // The scanner's profile (name, user type, …) as it was when they scanned, so a later rename
+    // never changes who an old scan says made it. NULL only for scans no version could be matched to.
+    scannerProfileVersionId: {
+      type: DataTypes.INTEGER.UNSIGNED,
+      allowNull: true,
+      field: 'scanner_profile_version_id',
+    },
     // When the one chance to see the image ended without seeing it ("Not now, go back", or leaving
     // the screen). The scan stays VERIFIED; the image can no longer be revealed.
     revealClosedAt: {

@@ -1,8 +1,9 @@
 const { Op } = require('sequelize');
-const { sequelize, User, UserProfileVersion, QrBatch } = require('../models');
+const { sequelize, User, UserProfileVersion, QrBatch, QrCode, Scan } = require('../models');
 const { publicUser } = require('./authController');
 const { uploadFileToS3 } = require('../services/s3Service');
 const { profileChanges, recordProfileVersion, historySummaries } = require('../utils/profileHistory');
+const { userCodeLike } = require('../utils/roles');
 
 const USER_TYPES = ['farmer', 'retailer', 'distributor', 'supplier', 'consumer'];
 
@@ -76,6 +77,7 @@ const listUsers = async (req, res) => {
       where[Op.or] = [
         { name: { [Op.like]: pattern } },
         { mobile: { [Op.like]: pattern } },
+        userCodeLike(sequelize, pattern), // the user's ID, e.g. USR-00012
         // Also match names and numbers the user had before, so searching "Harish" still finds
         // the account now called Kumar.
         {
@@ -233,17 +235,23 @@ const getUserHistory = async (req, res) => {
       return res.status(404).json({ message: 'User not found.' });
     }
 
-    const [versions, batches] = await Promise.all([
+    const [versions, batches, scans] = await Promise.all([
       UserProfileVersion.findAll({
         where: { userId: user.id },
         include: [{ model: User, as: 'editor', attributes: ['id', 'name', 'username'] }],
         order: [['versionNo', 'ASC']],
       }),
       QrBatch.findAll({ where: { createdBy: user.id }, order: [['createdAt', 'DESC']] }),
+      Scan.findAll({
+        where: { userId: user.id },
+        include: [{ model: QrCode, as: 'qrCode', attributes: ['id'], include: [{ model: QrBatch, as: 'batch', attributes: ['productName', 'variantSize', 'producer', 'batchNo'] }] }],
+        order: [['id', 'DESC']],
+        limit: 500,
+      }),
     ]);
 
     return res.status(200).json({
-      user: publicUser(user),
+      user: { ...publicUser(user), joinedAt: user.createdAt },
       versions: versions.map((v, i) => ({
         id: v.id,
         versionNo: v.versionNo,
@@ -266,6 +274,19 @@ const getUserHistory = async (req, res) => {
         numberOfQrs: b.numberOfQrs,
         profileVersionId: b.creatorProfileVersionId,
         createdAt: b.createdAt,
+      })),
+      // Every scan / verification the user made, tied to the details they had at the time.
+      scans: scans.map((s) => ({
+        id: s.id,
+        action: s.action,
+        result: s.result,
+        code: s.code,
+        productName: s.qrCode?.batch?.productName ?? null,
+        variantSize: s.qrCode?.batch?.variantSize ?? null,
+        producer: s.qrCode?.batch?.producer ?? null,
+        batchNo: s.qrCode?.batch?.batchNo ?? null,
+        profileVersionId: s.scannerProfileVersionId,
+        createdAt: s.createdAt,
       })),
     });
   } catch (err) {

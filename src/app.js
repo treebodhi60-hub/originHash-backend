@@ -13,6 +13,9 @@ const scanRoutes = require('./routes/scanRoutes');
 const walletRoutes = require('./routes/walletRoutes');
 const paymentRoutes = require('./routes/paymentRoutes');
 const planRoutes = require('./routes/planRoutes');
+const stickerRoutes = require('./routes/stickerRoutes');
+const bulkQrRoutes = require('./routes/bulkQrRoutes');
+const lightQrRoutes = require('./routes/lightQrRoutes');
 
 const app = express();
 
@@ -64,6 +67,9 @@ app.use('/api/scans', scanRoutes);
 app.use('/api/wallet', walletRoutes);
 app.use('/api/payments', paymentRoutes);
 app.use('/api/plans', planRoutes);
+app.use('/api/stickers', stickerRoutes);
+app.use('/api/bulk-qr', bulkQrRoutes);
+app.use('/api/light-qr', lightQrRoutes);
 
 // 404
 app.use((req, res) => res.status(404).json({ message: 'Route not found.' }));

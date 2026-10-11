@@ -20,6 +20,9 @@ const PlanSubscription = sequelize.define(
     // What this period cost, and the price per sticker beyond the allowance — fixed at purchase.
     pricePaise: { type: DataTypes.INTEGER.UNSIGNED, allowNull: false, field: 'price_paise' },
     overagePricePaise: { type: DataTypes.INTEGER.UNSIGNED, allowNull: false, field: 'overage_price_paise' },
+    // Fixed + Variable: extras past overageTierQr in a month cost overageAboveTierPaise. NULL = one price.
+    overageTierQr: { type: DataTypes.INTEGER.UNSIGNED, allowNull: true, field: 'overage_tier_qr' },
+    overageAboveTierPaise: { type: DataTypes.INTEGER.UNSIGNED, allowNull: true, field: 'overage_above_tier_paise' },
     status: {
       type: DataTypes.STRING(10),
       allowNull: false,
@@ -32,6 +35,8 @@ const PlanSubscription = sequelize.define(
     cycleStart: { type: DataTypes.DATE, allowNull: false, field: 'cycle_start' },
     cycleEnd: { type: DataTypes.DATE, allowNull: false, field: 'cycle_end' },
     cycleUsed: { type: DataTypes.INTEGER.UNSIGNED, allowNull: false, defaultValue: 0, field: 'cycle_used' },
+    // Stickers beyond the allowance this month (they decide when the lower extra price starts).
+    cycleOverageUsed: { type: DataTypes.INTEGER.UNSIGNED, allowNull: false, defaultValue: 0, field: 'cycle_overage_used' },
     // A change chosen during this period; it takes effect at the next renewal.
     nextPlanType: { type: DataTypes.STRING(20), allowNull: true, field: 'next_plan_type' },
     nextBillingCycle: { type: DataTypes.STRING(10), allowNull: true, field: 'next_billing_cycle' },

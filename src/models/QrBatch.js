@@ -66,23 +66,19 @@ const QrBatch = sequelize.define(
       allowNull: true,
       field: 'creator_profile_version_id',
     },
-    // What generating this batch cost, in paise. NULL on batches made before stickers were
-    // charged (or while billing is off).
-    pricePerQrPaise: {
-      type: DataTypes.INTEGER.UNSIGNED,
+    // Labels on each page of the batch's PDF (default 10). NULL on older batches, which keep the
+    // old layout: as many full-size stickers as fit.
+    labelsPerPage: {
+      type: DataTypes.SMALLINT.UNSIGNED,
       allowNull: true,
-      field: 'price_per_qr_paise',
+      field: 'labels_per_page',
     },
-    amountChargedPaise: {
-      type: DataTypes.INTEGER.UNSIGNED,
+    // Which sticker balance (plan tab) paid for this batch: PAYG, SUBSCRIPTION or FIXED_VARIABLE.
+    // NULL on batches made while billing was off.
+    stickerSource: {
+      type: DataTypes.STRING(20),
       allowNull: true,
-      field: 'amount_charged_paise',
-    },
-    // How many of the batch's stickers a plan's monthly allowance covered (the rest were charged).
-    planCoveredCount: {
-      type: DataTypes.INTEGER.UNSIGNED,
-      allowNull: true,
-      field: 'plan_covered_count',
+      field: 'sticker_source',
     },
   },
   {

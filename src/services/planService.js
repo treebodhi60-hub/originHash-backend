@@ -52,6 +52,8 @@ const startPlan = async (wallet, choice, transaction, { start = new Date(), rene
       monthlyQuota: terms.monthlyQuota,
       pricePaise: terms.pricePaise,
       overagePricePaise: terms.overagePricePaise,
+      overageTierQr: terms.overageTierQr,
+      overageAboveTierPaise: terms.overageAboveTierPaise,
       status: 'ACTIVE',
       autoRenew: true,
       periodStart: start,
@@ -103,6 +105,7 @@ const refreshPlan = async (wallet, transaction, now = new Date()) => {
         cycleStart: addMonths(sub.periodStart, k),
         cycleEnd: cycleEnd > sub.periodEnd ? sub.periodEnd : cycleEnd,
         cycleUsed: 0,
+        cycleOverageUsed: 0,
       },
       { transaction }
     );
@@ -117,13 +120,25 @@ const findPaused = (userId, transaction) =>
 
 // How a batch of `count` stickers is paid: first from the plan's remaining monthly allowance, the
 // rest at the overage price (₹15 on Fixed + Variable; Pay As You Go on Subscription or no plan).
+// On Fixed + Variable, extras past the plan's monthly tier (1,000) cost the lower price (₹10):
+// `bulkCount` of the `extraCount` are charged at `bulkPricePaise`.
 const quoteBatch = (count, sub) => {
   const config = planConfig();
   const remaining = sub ? Math.max(0, sub.monthlyQuota - sub.cycleUsed) : 0;
   const coveredCount = Math.min(count, remaining);
   const extraCount = count - coveredCount;
   const extraPricePaise = sub ? sub.overagePricePaise : config.paygPricePerQrPaise;
-  return { coveredCount, extraCount, extraPricePaise, totalPaise: extraCount * extraPricePaise };
+  const tierLeft = sub?.overageTierQr ? Math.max(0, sub.overageTierQr - sub.cycleOverageUsed) : Infinity;
+  const bulkCount = Math.max(0, extraCount - tierLeft);
+  const bulkPricePaise = bulkCount ? sub.overageAboveTierPaise : null;
+  return {
+    coveredCount,
+    extraCount,
+    extraPricePaise,
+    bulkCount,
+    bulkPricePaise,
+    totalPaise: (extraCount - bulkCount) * extraPricePaise + bulkCount * (bulkPricePaise || 0),
+  };
 };
 
 // Charges a just-created batch inside the caller's transaction (wallet locked, plan refreshed).
@@ -131,7 +146,9 @@ const chargeForBatch = async (wallet, sub, { batch, count }, transaction) => {
   const quote = quoteBatch(count, sub);
   const parts = [];
   if (quote.coveredCount) parts.push(`${quote.coveredCount.toLocaleString('en-IN')} from plan`);
-  if (quote.extraCount) parts.push(`${quote.extraCount.toLocaleString('en-IN')} × ${formatRupees(quote.extraPricePaise)}`);
+  const fullCount = quote.extraCount - quote.bulkCount;
+  if (fullCount) parts.push(`${fullCount.toLocaleString('en-IN')} × ${formatRupees(quote.extraPricePaise)}`);
+  if (quote.bulkCount) parts.push(`${quote.bulkCount.toLocaleString('en-IN')} × ${formatRupees(quote.bulkPricePaise)}`);
   await applyToWallet(
     wallet,
     {
@@ -143,10 +160,16 @@ const chargeForBatch = async (wallet, sub, { batch, count }, transaction) => {
     transaction
   );
   // Safe as a read-then-write: the wallet lock serialises every change to this user's plan.
-  if (quote.coveredCount) await sub.update({ cycleUsed: sub.cycleUsed + quote.coveredCount }, { transaction });
+  if (sub && count) {
+    await sub.update(
+      { cycleUsed: sub.cycleUsed + quote.coveredCount, cycleOverageUsed: sub.cycleOverageUsed + quote.extraCount },
+      { transaction }
+    );
+  }
   await batch.update(
     {
-      pricePerQrPaise: quote.extraCount ? quote.extraPricePaise : null,
+      // A batch split across both extra prices records the higher one; amountChargedPaise is exact.
+      pricePerQrPaise: quote.extraCount ? (quote.bulkCount === quote.extraCount ? quote.bulkPricePaise : quote.extraPricePaise) : null,
       amountChargedPaise: quote.totalPaise,
       planCoveredCount: quote.coveredCount,
     },
@@ -174,6 +197,9 @@ const planJson = (sub) => {
     cycleUsed: used,
     remaining: sub.status === 'ACTIVE' ? Math.max(0, sub.monthlyQuota - used) : 0,
     overagePricePaise: sub.overagePricePaise,
+    overageTierQr: sub.overageTierQr,
+    overageAboveTierPaise: sub.overageAboveTierPaise,
+    cycleOverageUsed: sub.status === 'ACTIVE' ? sub.cycleOverageUsed : 0,
     pricePaise: sub.pricePaise,
     periodStart: sub.periodStart,
     periodEnd: sub.periodEnd,

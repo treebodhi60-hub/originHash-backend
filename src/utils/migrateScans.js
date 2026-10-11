@@ -1,6 +1,7 @@
 const { randomUUID } = require('crypto');
 const { QueryTypes } = require('sequelize');
 const sequelize = require('../config/db');
+const { planConfig } = require('../config/plans');
 
 const columnType = async (table, column) => {
   const [row] = await sequelize.query(
@@ -95,6 +96,33 @@ const ensureProfileHistory = async () => {
   }
 };
 
+// Which version of their profile each scan was made under (who they were called at the time).
+// Scans from before this column are matched by date: the version in force when the scan happened,
+// or — for scans older than the user's first recorded version — that first version.
+const ensureScannerProfiles = async () => {
+  if (!(await columnType('scans', 'scanner_profile_version_id'))) {
+    await sequelize.query('ALTER TABLE scans ADD COLUMN scanner_profile_version_id INT UNSIGNED NULL AFTER user_id');
+    await sequelize.query(
+      'ALTER TABLE scans ADD CONSTRAINT fk_scans_scanner_profile FOREIGN KEY (scanner_profile_version_id) REFERENCES user_profile_versions (id) ON DELETE SET NULL'
+    );
+    console.log('scans.scanner_profile_version_id added.');
+  }
+  const [, inForce] = await sequelize.query(
+    `UPDATE scans s SET s.scanner_profile_version_id = (
+       SELECT v.id FROM user_profile_versions v
+       WHERE v.user_id = s.user_id AND v.created_at <= s.created_at
+       ORDER BY v.version_no DESC LIMIT 1)
+     WHERE s.scanner_profile_version_id IS NULL`
+  );
+  const [, earliest] = await sequelize.query(
+    `UPDATE scans s SET s.scanner_profile_version_id = (
+       SELECT v.id FROM user_profile_versions v WHERE v.user_id = s.user_id ORDER BY v.version_no ASC LIMIT 1)
+     WHERE s.scanner_profile_version_id IS NULL`
+  );
+  const filled = (inForce?.affectedRows || 0) + (earliest?.affectedRows || 0);
+  if (filled) console.log(`scans.scanner_profile_version_id filled for ${filled} scan(s).`);
+};
+
 // sequelize.sync() creates missing tables but never changes existing ones, so bring older
 // tables up to date here. Each step checks first, so on a current database this does nothing.
 const migrateScans = async () => {
@@ -114,6 +142,8 @@ const migrateScans = async () => {
       await sequelize.query('ALTER TABLE scans ADD COLUMN image_revealed_at DATETIME NULL AFTER longitude');
       console.log('scans.image_revealed_at added.');
     }
+
+    await ensureScannerProfiles();
 
     if (resultType && !(await columnType('scans', 'reveal_closed_at'))) {
       await sequelize.query('ALTER TABLE scans ADD COLUMN reveal_closed_at DATETIME NULL');
@@ -161,17 +191,27 @@ const migrateScans = async () => {
 
     await ensureProfileHistory();
 
-    // What each batch cost (sticker billing). Older batches stay NULL — they were free.
-    if (!(await columnType('qr_batches', 'price_per_qr_paise'))) {
-      await sequelize.query(
-        'ALTER TABLE qr_batches ADD COLUMN price_per_qr_paise INT UNSIGNED NULL, ADD COLUMN amount_charged_paise INT UNSIGNED NULL'
-      );
-      console.log('qr_batches.price_per_qr_paise / amount_charged_paise added.');
+    // Labels per PDF page, chosen when generating. Older batches stay NULL (the old layout).
+    if (!(await columnType('qr_batches', 'labels_per_page'))) {
+      await sequelize.query('ALTER TABLE qr_batches ADD COLUMN labels_per_page SMALLINT UNSIGNED NULL AFTER page_size');
+      console.log('qr_batches.labels_per_page added.');
     }
-    if (!(await columnType('qr_batches', 'plan_covered_count'))) {
-      await sequelize.query('ALTER TABLE qr_batches ADD COLUMN plan_covered_count INT UNSIGNED NULL');
-      console.log('qr_batches.plan_covered_count added.');
+    // Which plan's sticker balance paid for each batch. Older batches stay NULL.
+    if (!(await columnType('qr_batches', 'sticker_source'))) {
+      await sequelize.query('ALTER TABLE qr_batches ADD COLUMN sticker_source VARCHAR(20) NULL');
+      console.log('qr_batches.sticker_source added.');
     }
+
+    // Pay As You Go stickers started out never expiring; they now last a set time from purchase
+    // (two years by default). Packs bought before that get the same deadline, counted from purchase.
+    const months = planConfig().payg.validityMonths;
+    const [, paygDated] = await sequelize.query(
+      `UPDATE sticker_packs
+       SET period_end = DATE_ADD(period_start, INTERVAL ${months} MONTH),
+           cycle_end = DATE_ADD(period_start, INTERVAL ${months} MONTH)
+       WHERE plan_type = 'PAYG' AND cycle_end IS NULL`
+    );
+    if (paygDated?.affectedRows) console.log(`sticker_packs: ${paygDated.affectedRows} Pay As You Go pack(s) given an expiry date.`);
   } catch (err) {
     // Keep the API up; the new columns only add detail to scans and stickers.
     console.error('Could not migrate the database:', err.message);

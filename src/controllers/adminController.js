@@ -3,6 +3,7 @@ const { Op } = require('sequelize');
 const { sequelize, User } = require('../models');
 const { publicUser } = require('./authController');
 const { recordProfileVersion } = require('../utils/profileHistory');
+const { userCodeLike } = require('../utils/roles');
 
 // GET /api/admins  (super-admin only) ?search=
 const listAdmins = async (req, res) => {
@@ -15,6 +16,7 @@ const listAdmins = async (req, res) => {
         { name: { [Op.like]: `%${search}%` } },
         { username: { [Op.like]: `%${search}%` } },
         { email: { [Op.like]: `%${search}%` } },
+        userCodeLike(sequelize, `%${search}%`), // the admin's ID, e.g. USR-00001
       ];
     }
 

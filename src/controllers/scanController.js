@@ -1,8 +1,9 @@
 const { Op } = require('sequelize');
-const { sequelize, QrBatch, QrCode, Scan, ScanReport, User } = require('../models');
+const { sequelize, QrBatch, QrCode, Scan, ScanReport, User, UserProfileVersion } = require('../models');
+const { recordProfileVersion } = require('../utils/profileHistory');
 const { uploadFileToS3, signedUrlFor } = require('../services/s3Service');
 const { nameScanLocation } = require('../utils/locationNames');
-const { isAdminUser, canSeeFullJourney } = require('../utils/roles');
+const { isAdminUser, canSeeFullJourney, userCode } = require('../utils/roles');
 const { stickerQrDataUrl } = require('../utils/stickerQr');
 const { buildShareCard } = require('../utils/shareCard');
 
@@ -132,9 +133,12 @@ const createScan = async (req, res) => {
           result = 'VERIFIED';
         }
       }
+      // Pin the scanner's details as they are right now (a new version only if they changed).
+      const profile = await recordProfileVersion(req.user, { source: 'system', transaction });
       const created = await Scan.create(
         {
           userId: req.user.id,
+          scannerProfileVersionId: profile.id,
           qrCodeId: codeRow?.id ?? null,
           code,
           action,
@@ -283,9 +287,27 @@ const reportScan = async (req, res) => {
 const historyScope = (user) => (isAdminUser(user) ? {} : { userId: user.id });
 
 const SCANNER_ATTRIBUTES = ['id', 'name', 'userType'];
+// Every scan is shown under the scanner's details AT THE TIME (their name then), not today's.
+const SCANNER_PROFILE = { model: UserProfileVersion, as: 'scannerProfile', attributes: ['id', 'name', 'userType'] };
+const nameAtScan = (scan) => (scan.scannerProfile ? scan.scannerProfile.name : scan.user?.name) ?? null;
+const typeAtScan = (scan) => (scan.scannerProfile ? scan.scannerProfile.userType : scan.user?.userType) ?? null;
 
-const scannedByJson = (scan, viewer) =>
-  scan.user ? { name: scan.user.name ?? null, userType: scan.user.userType ?? null, isYou: scan.userId === viewer.id } : null;
+// Who made a scan, under the name they had when they made it. Admins and the user who generated the
+// sticker's batch (canSeeFullJourney) also get the permanent user ID (USR-…) and, if the person has
+// renamed since, what they're called now — so every action can be tied to the right account.
+const scannedByJson = (scan, viewer) => {
+  if (!scan.user) return null;
+  const identify = isAdminUser(viewer) || canSeeFullJourney(viewer, scan.qrCode);
+  const then = nameAtScan(scan);
+  return {
+    name: then,
+    userType: typeAtScan(scan),
+    isYou: scan.userId === viewer.id,
+    userId: identify ? scan.userId : null,
+    userCode: identify ? userCode(scan.userId) : null,
+    currentName: identify && scan.user.name && scan.user.name !== then ? scan.user.name : null,
+  };
+};
 
 // Every "Scan to record" of a sticker, oldest first, plus when (if ever) a buyer verified it.
 // Admins and the batch's creator see everyone's scans; anyone else sees just their own.
@@ -294,7 +316,7 @@ const buildJourney = async (codeRow, viewer) => {
   const [records, verified] = await Promise.all([
     Scan.findAll({
       where: { qrCodeId: codeRow.id, result: 'SCANNED', ...(!full && { userId: viewer.id }) },
-      include: [{ model: User, as: 'user', attributes: SCANNER_ATTRIBUTES }],
+      include: [{ model: User, as: 'user', attributes: SCANNER_ATTRIBUTES }, SCANNER_PROFILE],
       order: [['id', 'ASC']],
       limit: JOURNEY_LIMIT,
     }),
@@ -307,8 +329,8 @@ const buildJourney = async (codeRow, viewer) => {
     buyerVerifiedAt: verified?.createdAt ?? null,
     journey: records.map((record) => ({
       id: record.id,
-      userName: record.user?.name ?? null,
-      userType: record.user?.userType ?? null,
+      userName: nameAtScan(record),
+      userType: typeAtScan(record),
       isYou: record.userId === viewer.id,
       location: locationJson(record),
       createdAt: record.createdAt,
@@ -329,7 +351,8 @@ const historySearch = (q, viewer) => {
     { '$qrCode.batch.product_name$': like },
     { '$qrCode.batch.producer$': like },
     { '$qrCode.batch.batch_no$': like },
-    ...(isAdminUser(viewer) ? [{ '$user.name$': like }] : []),
+    // Admins: the scanner's current name, or the name they had when they scanned (renamed users).
+    ...(isAdminUser(viewer) ? [{ '$user.name$': like }, { '$scannerProfile.name$': like }] : []),
   ];
 };
 
@@ -363,7 +386,7 @@ const listScans = async (req, res) => {
       where,
       include: [
         { model: QrCode, as: 'qrCode', include: [{ model: QrBatch, as: 'batch' }] },
-        { model: User, as: 'user', attributes: SCANNER_ATTRIBUTES },
+        { model: User, as: 'user', attributes: SCANNER_ATTRIBUTES }, SCANNER_PROFILE,
       ],
       order: [['id', 'DESC']],
       subQuery: false,
@@ -401,8 +424,8 @@ const listScans = async (req, res) => {
 };
 
 // The sticker behind a recorded, verified or mismatched scan: its QR for everyone who can open the scan, and
-// its image only for admins and the user who generated the batch. The image is the secret a
-// buyer compares against, so for anyone else it never leaves the server.
+// its image only for admins and super-admins — not even the user who generated the batch sees it
+// here. The image is the secret a buyer compares against, so for anyone else it never leaves the server.
 const STICKER_SHOWN_FOR = ['SCANNED', ...SUCCEEDED, 'UNMATCHED'];
 const stickerJson = async (scan, viewer) => {
   if (!scan.qrCode || !STICKER_SHOWN_FOR.includes(scan.result)) return null;
@@ -410,7 +433,7 @@ const stickerJson = async (scan, viewer) => {
     code: scan.qrCode.code,
     qrDataUrl: await stickerQrDataUrl(scan.qrCode.code),
     // Mismatched scans show only the QR and its code, for everyone.
-    imageUrl: scan.result !== 'UNMATCHED' && canSeeFullJourney(viewer, scan.qrCode) ? scan.qrCode.imageUrl : null,
+    imageUrl: scan.result !== 'UNMATCHED' && isAdminUser(viewer) ? scan.qrCode.imageUrl : null,
   };
 };
 
@@ -426,7 +449,7 @@ const getScan = async (req, res) => {
       include: [
         { model: QrCode, as: 'qrCode', include: [{ model: QrBatch, as: 'batch' }] },
         { model: ScanReport, as: 'report' },
-        { model: User, as: 'user', attributes: SCANNER_ATTRIBUTES },
+        { model: User, as: 'user', attributes: SCANNER_ATTRIBUTES }, SCANNER_PROFILE,
       ],
     });
     if (!scan) {
@@ -502,7 +525,7 @@ const getSummary = async (req, res) => {
         where,
         include: [
           { model: QrCode, as: 'qrCode', include: [{ model: QrBatch, as: 'batch' }] },
-          { model: User, as: 'user', attributes: SCANNER_ATTRIBUTES },
+          { model: User, as: 'user', attributes: SCANNER_ATTRIBUTES }, SCANNER_PROFILE,
         ],
         order: [['id', 'DESC']],
         limit: RECENT_LIMIT,

@@ -7,8 +7,10 @@ const { sequelize, QrBatch, QrCode, ImageFolder, ImageAsset, User, UserProfileVe
 const { canSeeFullJourney, isAdminUser } = require('../utils/roles');
 const { TRACKED_FIELDS, profileChanges, recordProfileVersion } = require('../utils/profileHistory');
 const { stickerQrPayload } = require('../utils/stickerQr');
-const { billingConfig, ensureWallet, lockWallet, formatRupees } = require('../services/walletService');
-const { refreshPlan, quoteBatch, chargeForBatch, planJson } = require('../services/planService');
+const { PAGE_SIZE_NAMES, PAGE_MARGIN, GAP, DEFAULT_PER_PAGE, gridFor, maxPerPage, legacyPerPage } = require('../utils/stickerLayout');
+const { drawCutLines, fitLine } = require('../utils/stickerPdf');
+const { STICKER_SOURCES, PLAN_NAMES } = require('../config/plans');
+const { billingConfig, lockUser, refreshPacks, balanceOf, tabsJson, useStickers } = require('../services/stickerService');
 
 // Stickers only ever show this photo at business-card size, so re-encode it small
 // before embedding — otherwise a batch's PDF balloons to tens of MB per full-res photo.
@@ -33,10 +35,12 @@ const batchJson = (batch) => ({
   batchNo: batch.batchNo,
   splitType: batch.splitType,
   pageSize: batch.pageSize || 'A4',
+  labelsPerPage: batch.labelsPerPage || legacyPerPage(batch.pageSize || 'A4', batch.splitType),
   numberOfQrs: batch.numberOfQrs,
   folderId: batch.folderId,
   folderName: batch.folder ? batch.folder.name : undefined,
   folderDeleted: Boolean(batch.folder?.deletedAt),
+  stickerSource: batch.stickerSource || null,
   createdAt: batch.createdAt,
 });
 
@@ -72,8 +76,10 @@ const codeJson = (code) => ({
   batchNo: code.batch?.batchNo,
   splitType: code.batch?.splitType,
   pageSize: code.batch?.pageSize || 'A4',
+  labelsPerPage: code.batch ? code.batch.labelsPerPage || legacyPerPage(code.batch.pageSize || 'A4', code.batch.splitType) : undefined,
   folderName: code.batch?.folder?.name,
   folderDeleted: Boolean(code.batch?.folder?.deletedAt),
+  stickerSource: code.batch?.stickerSource || null,
 });
 
 // Batch numbers are unique across every batch. Compared by the column's collation, so
@@ -117,19 +123,29 @@ const createBatch = async (req, res) => {
       return res.status(400).json({ message: 'Paper size must be A4 or A3.' });
     }
 
+    // How many labels each PDF page holds; they shrink to fit when more than full size allows.
+    const labelsPerPage = req.body.labelsPerPage == null || req.body.labelsPerPage === '' ? DEFAULT_PER_PAGE : Number(req.body.labelsPerPage);
+    const mostPerPage = maxPerPage(pageSize, splitType);
+    if (!Number.isInteger(labelsPerPage) || labelsPerPage < 1 || labelsPerPage > mostPerPage) {
+      return res.status(400).json({ message: `Labels per page must be between 1 and ${mostPerPage} for ${pageSize}.`, field: 'labelsPerPage' });
+    }
+
     const count = Number(numberOfQrs);
     if (!Number.isInteger(count) || count < MIN_QRS || count > MAX_QRS) {
       return res.status(400).json({ message: `Number of QRs must be between ${MIN_QRS} and ${MAX_QRS}.` });
     }
 
-    // Stickers are paid for from the creator's wallet (once billing is switched on).
+    // Once billing is on, stickers come out of one of the creator's plan balances (a tab).
     const billing = billingConfig();
-    if (billing.enabled) await ensureWallet(req.user.id);
+    const source = billing.enabled ? req.body.source : null;
+    if (billing.enabled && !STICKER_SOURCES.includes(source)) {
+      return res.status(400).json({ message: 'Choose which sticker balance to use.' });
+    }
 
     // All or nothing, holding a shared lock on the folder: a sample folder can't be deleted while
     // stickers are being made from it, and one deleted a moment ago is simply not found.
-    // With billing on, the wallet row is locked too: the balance check, the stickers and the
-    // charge commit together, so concurrent requests can't spend the same balance twice.
+    // With billing on, the user is locked too: the balance check, the stickers and taking them
+    // from the balance commit together, so concurrent requests can't spend the same stickers twice.
     const result = await sequelize.transaction(async (transaction) => {
       const folder = await ImageFolder.findByPk(folderId, { transaction, lock: transaction.LOCK.SHARE });
       if (!folder) return { status: 404, message: 'Selected folder was not found.' };
@@ -139,28 +155,16 @@ const createBatch = async (req, res) => {
         return { status: 400, message: 'Selected folder has no available (unblocked) images.' };
       }
 
-      // The plan's monthly allowance is used first; anything beyond it is charged from the wallet.
-      const wallet = billing.enabled ? await lockWallet(req.user.id, transaction) : null;
-      const plan = wallet ? await refreshPlan(wallet, transaction) : null;
-      if (wallet) {
-        const quote = quoteBatch(count, plan);
-        if (quote.totalPaise > wallet.balancePaise) {
-          const shortfallPaise = quote.totalPaise - wallet.balancePaise;
-          const what = quote.coveredCount
-            ? `${quote.extraCount} stickers beyond your plan's allowance cost ${formatRupees(quote.totalPaise)}`
-            : `${count} stickers cost ${formatRupees(quote.totalPaise)}`;
+      let packs = null;
+      if (source) {
+        await lockUser(req.user.id, transaction);
+        packs = await refreshPacks(req.user.id, transaction);
+        const available = balanceOf(packs, source);
+        if (available < count) {
           return {
             status: 402,
-            message: `Not enough balance: ${what} and your wallet has ${formatRupees(wallet.balancePaise)}. Add ${formatRupees(
-              shortfallPaise
-            )} or more to continue.`,
-            extra: {
-              code: 'INSUFFICIENT_BALANCE',
-              balancePaise: wallet.balancePaise,
-              requiredPaise: quote.totalPaise,
-              shortfallPaise,
-              plan: planJson(plan),
-            },
+            message: `Not enough stickers: this batch needs ${count} and your ${PLAN_NAMES[source]} balance has ${available}. Buy more or use another balance.`,
+            extra: { code: 'INSUFFICIENT_STICKERS', source, available, tabs: tabsJson(packs) },
           };
         }
       }
@@ -176,10 +180,12 @@ const createBatch = async (req, res) => {
           batchNo: batchNo.trim(),
           splitType,
           pageSize,
+          labelsPerPage,
           numberOfQrs: count,
           folderId,
           createdBy: req.user.id,
           creatorProfileVersionId: creatorProfile.id,
+          stickerSource: source,
         },
         { transaction }
       );
@@ -193,29 +199,20 @@ const createBatch = async (req, res) => {
         codes.push(code);
       }
 
-      const charge = wallet ? await chargeForBatch(wallet, plan, { batch, count }, transaction) : null;
-      return { folder, batch, codes, charge, plan, balancePaise: wallet?.balancePaise ?? null };
+      if (source) await useStickers(packs, source, count, batch, transaction);
+      return { folder, batch, codes, tabs: packs && tabsJson(packs) };
     });
 
     if (result.status) {
       return res.status(result.status).json({ message: result.message, ...result.extra });
     }
-    const { folder, batch, codes, charge, plan, balancePaise } = result;
+    const { folder, batch, codes, tabs } = result;
 
     return res.status(201).json({
       message: `${count} QR sticker(s) generated.`,
       batch: batchJson({ ...batch.toJSON(), folder }),
       codes: codes.map((c) => codeJson(c)),
-      ...(charge && {
-        wallet: {
-          chargedPaise: charge.totalPaise,
-          coveredCount: charge.coveredCount,
-          extraCount: charge.extraCount,
-          extraPricePaise: charge.extraPricePaise,
-          balancePaise,
-          plan: planJson(plan),
-        },
-      }),
+      ...(source && { stickers: { source, used: count, left: tabs.find((t) => t.planType === source)?.stickers ?? 0, tabs } }),
     });
   } catch (err) {
     console.error(err);
@@ -310,39 +307,6 @@ const listFilters = async (req, res) => {
   }
 };
 
-// ---------- PDF layout ----------
-// All sizes in PDF points (1 pt = 1/72 in ≈ 0.353 mm).
-const PAGE_SIZES = { A4: [595.28, 841.89], A3: [841.89, 1190.55] };
-const PAGE_SIZE_NAMES = Object.keys(PAGE_SIZES);
-
-// Vertical 50:50 is a business card (89 × 51 mm) with the image and QR side by side.
-// Horizontal 50:50 is a tall card (45 × 65 mm) with the image above the QR — 16 fit on an A4 page.
-const STICKER_SIZES = {
-  'vertical-50-50': { w: 3.5 * 72, h: 2 * 72 },
-  'horizontal-50-50': { w: 128, h: 184 },
-};
-
-const PAGE_MARGIN = 22; // ≈ 8 mm, inside most printers' unprintable edge
-const GAP = 10;
-const HEADER_H = 24;
-
-// The sticker grid for a paper size: tries the page upright and sideways and keeps whichever
-// fits more stickers (A3 horizontal stickers fit best sideways: 8 × 4 = 32).
-const pageLayout = (pageSize, splitType) => {
-  const [pw, ph] = PAGE_SIZES[pageSize] || PAGE_SIZES.A4;
-  const { w, h } = STICKER_SIZES[splitType] || STICKER_SIZES['vertical-50-50'];
-  const fit = (width, height) => {
-    const cols = Math.floor((width - PAGE_MARGIN * 2 + GAP) / (w + GAP));
-    const rows = Math.floor((height - PAGE_MARGIN * 2 - HEADER_H + GAP) / (h + GAP));
-    return { width, height, cols, rows, perPage: cols * rows };
-  };
-  const upright = fit(pw, ph);
-  const sideways = fit(ph, pw);
-  const best = sideways.perPage > upright.perPage ? sideways : upright;
-  const gridWidth = best.cols * w + (best.cols - 1) * GAP;
-  return { ...best, w, h, left: (best.width - gridWidth) / 2, top: PAGE_MARGIN + HEADER_H };
-};
-
 // The photo is printed as a square tile the exact size of the QR, so crop it square here —
 // centred on the most interesting region (faces, the animal) rather than the geometric middle.
 const fetchImageBuffer = async (url, cache) => {
@@ -359,14 +323,6 @@ const fetchImageBuffer = async (url, cache) => {
     .toBuffer();
   cache.set(url, resized);
   return resized;
-};
-
-// Single line of text that never wraps: shrinks down to `minSize`, then cuts with an ellipsis.
-const fitLine = (doc, text, x, y, width, { size, minSize = size, font = 'Helvetica', color, align = 'left' }) => {
-  let s = size;
-  doc.font(font);
-  while (s > minSize && doc.fontSize(s).widthOfString(text) > width) s -= 0.25;
-  doc.fillColor(color).fontSize(s).text(text, x, y, { width, align, lineBreak: false, ellipsis: true, height: s + 2 });
 };
 
 const drawStickerHeader = (doc, x, y, w, { producer, batchNo, packedDate, productName, variantSize }, compact) => {
@@ -480,7 +436,7 @@ const downloadBatchPdf = async (req, res) => {
     const packedLabel = `${String(packedDate.getDate()).padStart(2, '0')}/${String(packedDate.getMonth() + 1).padStart(2, '0')}/${String(packedDate.getFullYear()).slice(-2)}`;
 
     const pageSize = batch.pageSize || 'A4';
-    const layout = pageLayout(pageSize, batch.splitType);
+    const layout = gridFor(pageSize, batch.splitType, batch.labelsPerPage || legacyPerPage(pageSize, batch.splitType));
     const pages = Math.max(1, Math.ceil(batch.codes.length / layout.perPage));
 
     res.setHeader('Content-Type', 'application/pdf');
@@ -495,6 +451,8 @@ const downloadBatchPdf = async (req, res) => {
     const imageCache = new Map();
     const startPage = (page) => {
       doc.addPage({ size: [layout.width, layout.height], margin: 0 });
+      const onPage = Math.min(layout.perPage, batch.codes.length - (page - 1) * layout.perPage);
+      if (onPage > 0) drawCutLines(doc, layout, onPage);
       doc
         .fillColor('#163832')
         .fontSize(9)
@@ -503,7 +461,7 @@ const downloadBatchPdf = async (req, res) => {
         .fillColor('#6b7280')
         .font('Helvetica')
         .text(
-          `  ·  ${batch.producer} · ${batch.productName} · Batch ${batch.batchNo} · ${pageSize} · Page ${page} of ${pages}`,
+          `  ·  ${batch.producer} · ${batch.productName} · Batch ${batch.batchNo} · ${pageSize} · Page ${page} of ${pages}  ·  Cut along the dashed lines`,
           { lineBreak: false }
         );
     };
@@ -512,13 +470,17 @@ const downloadBatchPdf = async (req, res) => {
       const slot = i % layout.perPage;
       if (slot === 0) startPage(i / layout.perPage + 1);
 
-      const x = layout.left + (slot % layout.cols) * (layout.w + GAP);
-      const y = layout.top + Math.floor(slot / layout.cols) * (layout.h + GAP);
+      const x = layout.left + (slot % layout.cols) * (layout.sw + GAP);
+      const y = layout.top + Math.floor(slot / layout.cols) * (layout.sh + GAP);
 
       const imageBuffer = await fetchImageBuffer(codeRow.imageUrl, imageCache).catch(() => null);
       const qrBuffer = await QRCode.toBuffer(stickerQrPayload(codeRow.code), { margin: 0, width: 300 });
 
-      await drawSticker(doc, x, y, layout, {
+      // Each sticker is drawn at full size and scaled into its slot, so a smaller one is the same
+      // design shrunk evenly (text, photo and QR together).
+      doc.save();
+      doc.translate(x, y).scale(layout.scale);
+      await drawSticker(doc, 0, 0, layout, {
         producer: batch.producer,
         productName: batch.productName,
         variantSize: batch.variantSize,
@@ -529,6 +491,7 @@ const downloadBatchPdf = async (req, res) => {
         imageBuffer,
         qrBuffer,
       });
+      doc.restore();
     }
     if (!batch.codes.length) startPage(1);
 
