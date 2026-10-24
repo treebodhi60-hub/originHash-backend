@@ -40,8 +40,17 @@ const TWO_FACTOR_BASE_URL = "https://2factor.in/API/V1";
 const sendOtp222 = async (mobile) => {
   try {
     const apiKey = process.env.TWO_FACTOR_API_KEY;
+    const templateName = (process.env.TWO_FACTOR_TEMPLATE_NAME || "").trim();
 
-    const url = `https://2factor.in/API/V1/${apiKey}/SMS/${mobile}/AUTOGEN`;
+    if (!apiKey) {
+      throw new Error("TWO_FACTOR_API_KEY is missing in environment variables.");
+    }
+
+    // With a template name, 2Factor sends the DLT-approved template from your sender ID;
+    // without one it falls back to its default OTP template.
+    const url = templateName
+      ? `${TWO_FACTOR_BASE_URL}/${apiKey}/SMS/${mobile}/AUTOGEN/${encodeURIComponent(templateName)}`
+      : `${TWO_FACTOR_BASE_URL}/${apiKey}/SMS/${mobile}/AUTOGEN`;
 
     const response = await axios.get(url);
 
