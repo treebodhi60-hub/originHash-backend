@@ -59,4 +59,14 @@ const optionalAuth = async (req, res, next) => {
   next();
 };
 
-module.exports = { protect, optionalAuth, adminOnly, superAdminOnly };
+// Catalogue & stickers (image stock, QR, bulk QR and light QR stickers) for normal users.
+// Off for now: only admins can use them. Mirrors USER_STICKERS_ENABLED in the frontend's
+// utils/features.js. The public pages a printed sticker opens are not affected.
+const USER_STICKERS_ENABLED = false;
+
+const stickerAccess = (req, res, next) => {
+  if (USER_STICKERS_ENABLED || req.user?.isAdmin) return next();
+  return res.status(403).json({ message: 'Stickers are not available on your account yet.' });
+};
+
+module.exports = { protect, optionalAuth, adminOnly, superAdminOnly, stickerAccess };

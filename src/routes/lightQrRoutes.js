@@ -1,5 +1,5 @@
 const express = require('express');
-const { protect, optionalAuth } = require('../middleware/auth');
+const { protect, optionalAuth, stickerAccess } = require('../middleware/auth');
 const upload = require('../middleware/upload');
 const {
   createLightBatch,
@@ -33,10 +33,10 @@ router.post('/public/:token/updates', protect, updatePhoto, addLightUpdate);
 router.get('/public/:token/history', protect, getLightHistory);
 
 // The creator's side (their own batches; every batch for admins).
-router.post('/', protect, createLightBatch);
-router.get('/', protect, listLightBatches);
-router.get('/codes/:codeId/pdf', protect, downloadLightCodePdf);
-router.get('/:id', protect, getLightBatch);
-router.get('/:id/pdf', protect, downloadLightPdf);
+router.post('/', protect, stickerAccess, createLightBatch);
+router.get('/', protect, stickerAccess, listLightBatches);
+router.get('/codes/:codeId/pdf', protect, stickerAccess, downloadLightCodePdf);
+router.get('/:id', protect, stickerAccess, getLightBatch);
+router.get('/:id/pdf', protect, stickerAccess, downloadLightPdf);
 
 module.exports = router;

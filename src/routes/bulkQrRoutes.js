@@ -1,5 +1,5 @@
 const express = require('express');
-const { protect, optionalAuth } = require('../middleware/auth');
+const { protect, optionalAuth, stickerAccess } = require('../middleware/auth');
 const {
   createBulkBatch,
   listBulkBatches,
@@ -19,9 +19,9 @@ router.post('/public/:code/scans', optionalAuth, recordBulkScan);
 router.patch('/public/scans/:token/location', addBulkScanLocation);
 
 // Signed in: create, list, look at and print (your own batches; every batch for admins).
-router.post('/', protect, createBulkBatch);
-router.get('/', protect, listBulkBatches);
-router.get('/:id', protect, getBulkBatch);
-router.get('/:id/pdf', protect, downloadBulkPdf);
+router.post('/', protect, stickerAccess, createBulkBatch);
+router.get('/', protect, stickerAccess, listBulkBatches);
+router.get('/:id', protect, stickerAccess, getBulkBatch);
+router.get('/:id/pdf', protect, stickerAccess, downloadBulkPdf);
 
 module.exports = router;

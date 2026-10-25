@@ -1,5 +1,5 @@
 const express = require('express');
-const { protect } = require('../middleware/auth');
+const { protect, stickerAccess } = require('../middleware/auth');
 const {
   createBatch,
   checkBatchNo,
@@ -14,8 +14,8 @@ const router = express.Router();
 // Public — this is what a printed sticker's QR code links to.
 router.get('/verify/:code', verifyCode);
 
-// Any logged-in user (normal user, admin, or super-admin) — not admin-only.
-router.use(protect);
+// Any logged-in user (normal user, admin, or super-admin) — while stickerAccess lets normal users in.
+router.use(protect, stickerAccess);
 
 router.post('/batches', createBatch);
 router.get('/batches/check', checkBatchNo);

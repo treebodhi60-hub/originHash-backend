@@ -1,5 +1,5 @@
 const express = require('express');
-const { protect, adminOnly } = require('../middleware/auth');
+const { protect, adminOnly, stickerAccess } = require('../middleware/auth');
 const upload = require('../middleware/upload');
 const {
   listFolders,
@@ -14,8 +14,8 @@ const {
 
 const router = express.Router();
 
-// Any logged-in user (normal user, admin, or super-admin) — not admin-only.
-router.use(protect);
+// Any logged-in user (normal user, admin, or super-admin) — while stickerAccess lets normal users in.
+router.use(protect, stickerAccess);
 
 router.get('/folders', listFolders);
 router.post('/folders', createFolder);
