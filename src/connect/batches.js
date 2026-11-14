@@ -1,0 +1,184 @@
+const { fn, col, literal } = require('sequelize');
+const { sequelize, ChainBatch, ChainUnit } = require('./models');
+const { newToken, newCoupon, serialOf, retailerQrUrl, consumerQrUrl, httpError } = require('./util');
+const { gridFor } = require('../utils/stickerLayout');
+const QRCode = require('qrcode');
+const { labelQrBuffer, streamQrLabelPdf } = require('../utils/stickerPdf');
+
+// Allotting QR batches to producers, and printing them. Every unit is a pair: a retailer QR and
+// a consumer QR (so a batch of N units is 2N QR codes), plus a unique coupon code when the batch
+// carries a discount.
+
+const MAX_QUANTITY = 5000;
+
+const defaultBatchNo = async (producerId, transaction) => {
+  const count = await ChainBatch.count({ where: { producerId }, transaction });
+  return `B${new Date().getFullYear()}-${String(count + 1).padStart(4, '0')}`;
+};
+
+// Creates the batch and its units in one transaction. A token or coupon clash is vanishingly rare,
+// so on one the whole batch is simply tried again. Resolves to the batch.
+const allotBatch = async ({ producerId, productId = null, batchNo, quantity, maxDiscountPercent, expiryDate, notes = null, allottedBy }, outer) => {
+  if (!Number.isInteger(quantity) || quantity < 1 || quantity > MAX_QUANTITY) {
+    throw httpError(400, `A batch can have between 1 and ${MAX_QUANTITY.toLocaleString('en-IN')} units.`, 'quantity');
+  }
+  const run = async (transaction) => {
+    const number = batchNo || (await defaultBatchNo(producerId, transaction));
+    if (await ChainBatch.findOne({ where: { producerId, batchNo: number }, attributes: ['id'], transaction })) {
+      throw httpError(409, `This producer already has a batch numbered ${number}.`, 'batchNo');
+    }
+    const batch = await ChainBatch.create(
+      { producerId, productId, batchNo: number, quantity, maxDiscountPercent, expiryDate, notes, allottedBy },
+      { transaction }
+    );
+    const tokens = new Set();
+    while (tokens.size < quantity * 2) tokens.add(newToken());
+    const list = [...tokens];
+    const coupons = new Set();
+    if (maxDiscountPercent) while (coupons.size < quantity) coupons.add(newCoupon());
+    const couponList = [...coupons];
+    const units = Array.from({ length: quantity }, (_, i) => ({
+      batchId: batch.id,
+      serialNo: i + 1,
+      retailerToken: list[i * 2],
+      consumerToken: list[i * 2 + 1],
+      couponCode: maxDiscountPercent ? couponList[i] : null,
+      discountPercent: maxDiscountPercent || null,
+    }));
+    for (let i = 0; i < units.length; i += 1000) await ChainUnit.bulkCreate(units.slice(i, i + 1000), { transaction });
+    return batch;
+  };
+
+  if (outer) return run(outer);
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return await sequelize.transaction(run);
+    } catch (err) {
+      if (err.name !== 'SequelizeUniqueConstraintError' || attempt >= 2) throw err;
+    }
+  }
+};
+
+// Per batch: units sold, scans, coupons claimed, and the first and last unit IDs.
+const batchTotals = async (batchIds) => {
+  if (!batchIds.length) return new Map();
+  const rows = await ChainUnit.findAll({
+    where: { batchId: batchIds },
+    attributes: [
+      'batchId',
+      [fn('SUM', literal("status = 'sold'")), 'sold'],
+      [fn('SUM', col('consumer_scan_count')), 'consumerScans'],
+      [fn('SUM', col('trade_scan_count')), 'tradeScans'],
+      [fn('SUM', literal('coupon_claimed_by IS NOT NULL')), 'claimed'],
+      [fn('MIN', col('id')), 'firstId'],
+      [fn('MAX', col('id')), 'lastId'],
+    ],
+    group: ['batchId'],
+    raw: true,
+  });
+  return new Map(rows.map((r) => [r.batchId, r]));
+};
+
+const safeName = (s) => String(s).replace(/[^a-zA-Z0-9-]+/g, '_');
+
+// Labels in pairs (retailer QR, then its consumer QR), with an even number of columns so each pair
+// sits side by side on the sheet.
+const pairLayout = () => {
+  for (const perPage of [12, 10, 8, 6, 4]) {
+    const layout = gridFor('A4', 'bulk', perPage);
+    if (layout.cols % 2 === 0) return layout;
+  }
+  return gridFor('A4', 'bulk', 10);
+};
+
+const streamBatchPdf = async (res, batch, producerName, units) =>
+  streamQrLabelPdf(res, {
+    layout: pairLayout(),
+    count: units.length * 2,
+    title: 'Retailer + consumer QR pairs',
+    subtitle: `${producerName} · Batch ${batch.batchNo} · ${units.length} units`,
+    fileName: `${safeName(batch.batchNo)}-qr-pairs.pdf`,
+    labelAt: async (i, doc) => {
+      const unit = units[Math.floor(i / 2)];
+      const retailer = i % 2 === 0;
+      const url = retailer ? retailerQrUrl(unit.retailerToken) : consumerQrUrl(unit.consumerToken);
+      return {
+        heading: `${retailer ? 'RETAILER QR' : 'CONSUMER QR'}  ·  ${batch.batchNo}`,
+        number: `${serialOf(unit.id)}  ·  ${retailer ? 'Retailer (activation)' : 'Consumer (after sale)'}`,
+        qrImage: doc.openImage(await labelQrBuffer(url, 360)),
+      };
+    },
+  });
+
+const csvCell = (v) => {
+  const s = v === null || v === undefined ? '' : String(v);
+  return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+};
+
+const batchCsv = (batch, units) => {
+  const head = ['serial', 'batch_no', 'retailer_qr_url', 'consumer_qr_url', 'coupon_code', 'discount_percent', 'coupon_valid_till', 'status', 'sold_at'];
+  const rows = units.map((u) => [
+    serialOf(u.id),
+    batch.batchNo,
+    retailerQrUrl(u.retailerToken),
+    consumerQrUrl(u.consumerToken),
+    u.couponCode || '',
+    u.discountPercent === null ? '' : Number(u.discountPercent),
+    u.couponCode ? batch.expiryDate : '',
+    u.status,
+    u.soldAt ? new Date(u.soldAt).toISOString() : '',
+  ]);
+  return [head, ...rows].map((r) => r.map(csvCell).join(',')).join('\n');
+};
+
+// A unit's two QR codes as PNG images (data URLs), drawn like the printed labels (same ink colour,
+// error correction H), for showing and downloading in the app.
+const PRINT_INK = '#163832';
+const qrImage = (url) => QRCode.toDataURL(url, { errorCorrectionLevel: 'H', margin: 2, width: 480, color: { dark: PRINT_INK, light: '#ffffff' } });
+const unitQrJson = async (unit) => {
+  const retailerUrl = retailerQrUrl(unit.retailerToken);
+  const consumerUrl = consumerQrUrl(unit.consumerToken);
+  const [retailer, consumer] = await Promise.all([qrImage(retailerUrl), qrImage(consumerUrl)]);
+  return {
+    serial: serialOf(unit.id),
+    status: unit.status,
+    retailer: { image: retailer, url: retailerUrl },
+    consumer: { image: consumer, url: consumerUrl },
+  };
+};
+
+// GET …/units/:id/qr and …/units/:id/pdf: one unit's QR pair, as images or as a printable label pair.
+const sendUnitQr = async (req, res, unit, producerName) => {
+  if (req.params.format === 'pdf') {
+    const batch = unit.batch;
+    return streamQrLabelPdf(res, {
+      layout: gridFor('A4', 'bulk', 2),
+      count: 2,
+      title: 'Retailer + consumer QR pair',
+      subtitle: `${producerName} · Batch ${batch.batchNo} · ${serialOf(unit.id)}`,
+      fileName: `${serialOf(unit.id)}-qr-pair.pdf`,
+      labelAt: async (i, doc) => {
+        const retailer = i === 0;
+        const url = retailer ? retailerQrUrl(unit.retailerToken) : consumerQrUrl(unit.consumerToken);
+        return {
+          heading: `${retailer ? 'RETAILER QR' : 'CONSUMER QR'}  ·  ${batch.batchNo}`,
+          number: `${serialOf(unit.id)}  ·  ${retailer ? 'Retailer (activation)' : 'Consumer (after sale)'}`,
+          qrImage: doc.openImage(await labelQrBuffer(url, 360)),
+        };
+      },
+    });
+  }
+  return res.status(200).json(await unitQrJson(unit));
+};
+
+const sendBatchFile = async (req, res, batch, producerName) => {
+  const units = await ChainUnit.findAll({ where: { batchId: batch.id }, order: [['serialNo', 'ASC']] });
+  if (req.params.format === 'csv') {
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="${safeName(batch.batchNo)}-qr-pairs.csv"`);
+    return res.send(batchCsv(batch, units));
+  }
+  return streamBatchPdf(res, batch, producerName, units);
+};
+
+module.exports = { MAX_QUANTITY, allotBatch, batchTotals, sendBatchFile, sendUnitQr };

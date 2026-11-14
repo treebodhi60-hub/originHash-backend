@@ -82,6 +82,15 @@ const User = sequelize.define(
       defaultValue: 0,
       field: 'scans_count',
     },
+    // ---- Supply-chain module (migration 20261114100100) ----
+    // A producer's admin or staff: logs in with username + password.
+    producerId: { type: DataTypes.INTEGER.UNSIGNED, allowNull: true, field: 'producer_id' },
+    producerRole: { type: DataTypes.ENUM('admin', 'staff'), allowNull: true, field: 'producer_role' },
+    canChat: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: false, field: 'can_chat' },
+    // A distributor or retailer registered by the OriginHash superadmin.
+    partnerRole: { type: DataTypes.ENUM('distributor', 'retailer'), allowNull: true, field: 'partner_role' },
+    businessName: { type: DataTypes.STRING(160), allowNull: true, field: 'business_name' },
+    city: { type: DataTypes.STRING(120), allowNull: true, field: 'city' },
   },
   {
     tableName: 'users',

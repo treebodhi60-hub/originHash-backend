@@ -16,6 +16,7 @@ const planRoutes = require('./routes/planRoutes');
 const stickerRoutes = require('./routes/stickerRoutes');
 const bulkQrRoutes = require('./routes/bulkQrRoutes');
 const lightQrRoutes = require('./routes/lightQrRoutes');
+const connectRoutes = require('./connect/routes');
 
 const app = express();
 
@@ -70,6 +71,8 @@ app.use('/api/plans', planRoutes);
 app.use('/api/stickers', stickerRoutes);
 app.use('/api/bulk-qr', bulkQrRoutes);
 app.use('/api/light-qr', lightQrRoutes);
+// Supply-chain module: producers, distributors, retailers, consumers and retailer/consumer QR pairs.
+app.use('/api/connect', connectRoutes);
 
 // 404
 app.use((req, res) => res.status(404).json({ message: 'Route not found.' }));

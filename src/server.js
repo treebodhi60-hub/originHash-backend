@@ -2,6 +2,7 @@ require('dotenv').config();
 const app = require('./app');
 const { sequelize } = require('./models');
 const seedAdmin = require('./utils/seedAdmin');
+const migrator = require('./db/migrator');
 const migrateScans = require('./utils/migrateScans');
 const { backfillLocationNames } = require('./utils/locationNames');
 const { billingStatus, startStickerSweeps } = require('./services/stickerService');
@@ -12,6 +13,9 @@ const start = async () => {
   try {
     await sequelize.authenticate();
     console.log('Database connected.');
+
+    // Versioned schema changes (backend/migrations) first, so the tables they own never come from sync().
+    await migrator.up();
 
     await sequelize.sync(); // creates tables if they don't exist
     console.log('Tables synced.');

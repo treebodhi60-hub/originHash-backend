@@ -2,6 +2,7 @@ const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
 const { Op } = require('sequelize');
 const { User, Otp } = require('../models');
+const Producer = require('../connect/producerModel');
 const { generateOtp } = require('../utils/otp');
 const { sendOtp222, verifyOtp222 } = require("../services/twoFactorService");
 
@@ -113,7 +114,16 @@ const publicUser = (user) => ({
   isBlocked: user.isBlocked,
   profileCompleted: user.profileCompleted,
   scansCount: user.scansCount,
+  // Supply-chain module
+  producerId: user.producerId ?? null,
+  producerRole: user.producerRole ?? null,
+  canChat: Boolean(user.producerRole === 'admin' || user.canChat),
+  partnerRole: user.partnerRole ?? null,
+  businessName: user.businessName ?? null,
+  city: user.city ?? null,
 });
+
+const PRODUCER_OTP_MESSAGE = "Producer accounts log in with a username and password.";
 
 // POST /api/auth/send-otp
 const sendOtp = async (req, res) => {
@@ -134,6 +144,10 @@ const sendOtp = async (req, res) => {
       return res.status(403).json({
         message: "Admin accounts log in with a username and password, not OTP.",
       });
+    }
+
+    if (user && user.producerId) {
+      return res.status(403).json({ message: PRODUCER_OTP_MESSAGE });
     }
 
     if (user && user.isBlocked) {
@@ -228,6 +242,10 @@ const verifyOtp = async (req, res) => {
       });
     }
 
+    if (user.producerId) {
+      return res.status(403).json({ message: PRODUCER_OTP_MESSAGE });
+    }
+
     if (user.isBlocked) {
       return res.status(403).json({
         message:
@@ -252,8 +270,9 @@ const verifyOtp = async (req, res) => {
   }
 };
 
-// POST /api/auth/admin-login  { username, password }
-const adminLogin = async (req, res) => {
+// Username + password sign-in. `who` is 'staff' (the public /login page: admins and producer users)
+// or 'superadmin' (the OriginHash superadmin's own login route, which no other page links to).
+const passwordLogin = (who) => async (req, res) => {
   try {
     const { username, password } = req.body;
 
@@ -261,9 +280,14 @@ const adminLogin = async (req, res) => {
       return res.status(400).json({ message: "Username and password are required." });
     }
 
-    const user = await User.findOne({ where: { username: username.trim(), isAdmin: true } });
+    const user = await User.findOne({ where: { username: username.trim() } });
+    const allowed =
+      user &&
+      user.passwordHash &&
+      (who === "superadmin" ? user.isSuperAdmin : !user.isSuperAdmin && (user.isAdmin || user.producerId));
 
-    if (!user || !user.passwordHash) {
+    // The same answer for a wrong password and for the wrong login page.
+    if (!allowed || !(await bcrypt.compare(password, user.passwordHash))) {
       return res.status(401).json({ message: "Invalid username or password." });
     }
 
@@ -271,9 +295,11 @@ const adminLogin = async (req, res) => {
       return res.status(403).json({ message: "This account has been blocked." });
     }
 
-    const matches = await bcrypt.compare(password, user.passwordHash);
-    if (!matches) {
-      return res.status(401).json({ message: "Invalid username or password." });
+    if (user.producerId) {
+      const producer = await Producer.findByPk(user.producerId, { attributes: ["id", "isBlocked"] });
+      if (!producer || producer.isBlocked) {
+        return res.status(403).json({ message: "This producer account has been blocked by OriginHash." });
+      }
     }
 
     const token = signToken(user);
@@ -284,9 +310,14 @@ const adminLogin = async (req, res) => {
       user: publicUser(user),
     });
   } catch (err) {
-    console.error("Admin Login Error:", err);
+    console.error("Login Error:", err);
     return res.status(500).json({ message: err.message || "Could not log in. Please try again." });
   }
 };
 
-module.exports = { sendOtp, verifyOtp, adminLogin, publicUser };
+// POST /api/auth/admin-login  { username, password } — admins and producer users.
+const adminLogin = passwordLogin("staff");
+// POST /api/auth/superadmin-login  { username, password } — the OriginHash superadmin only.
+const superAdminLogin = passwordLogin("superadmin");
+
+module.exports = { sendOtp, verifyOtp, adminLogin, superAdminLogin, publicUser };
