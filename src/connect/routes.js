@@ -102,6 +102,7 @@ const me = express.Router();
 me.use(signedIn);
 me.get('/history', qr.myHistory);
 me.get('/retailer-application', applications.myApplication);
+me.post('/identity', singleFile, applications.uploadIdentity);
 me.post('/retailer-application', applications.apply);
 me.post('/uploads', allow('retailer'), singleFile, async (req, res) => {
   try {

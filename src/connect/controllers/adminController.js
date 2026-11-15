@@ -6,7 +6,7 @@ const { allotBatch, batchTotals, sendBatchFile, sendUnitQr, readPrintLayout } = 
 const { withLoginStats, loginHistory } = require('../logins');
 const { queryHistory } = require('../history');
 const { readRetailer, saveRetailer } = require('../retailers');
-const { isStoredRef, storeFile, fileJson } = require('../files');
+const { isStoredRef, storeFile, fileJson, identityDocFrom } = require('../files');
 const { producerJson, producerUserJson, accountJson, batchJson, requestJson, unitJson, productJson } = require('../serialize');
 const { MOBILE_REGEX, EMAIL_REGEX, USERNAME_REGEX, text, opt, bool, validDate, discount, fail, httpError } = require('../util');
 
@@ -302,7 +302,7 @@ const listAccounts = async (req, res) => {
         : {}),
     };
     const accounts = await User.findAll({ where, include: accountInclude, order: [['createdAt', 'DESC']], limit: 1000 });
-    return res.status(200).json({ accounts: accounts.map(accountJson) });
+    return res.status(200).json({ accounts: accounts.map((a) => accountJson(a, req)) });
   } catch (err) {
     return fail(res, err, 'Could not load accounts.');
   }
@@ -315,7 +315,9 @@ const readAccountFields = (body, role) => {
   if (email && !EMAIL_REGEX.test(email)) throw httpError(400, 'Enter a valid email address.', 'email');
   const businessName = opt(body.businessName, 160);
   if (role === 'distributor' && !businessName) throw httpError(400, 'Enter the business name.', 'businessName');
-  return { name, email, businessName, city: opt(body.city, 120), address: opt(body.address, 255) };
+  // Retailers: an identity document, optional when the superadmin adds them.
+  const identity = role === 'retailer' ? identityDocFrom(body.identityDoc) : null;
+  return { name, email, businessName, city: opt(body.city, 120), address: opt(body.address, 255), ...(identity || {}) };
 };
 
 const roleColumns = (role) => (role === 'consumer' ? { partnerRole: null, userType: 'consumer' } : { partnerRole: role, userType: role });
@@ -346,7 +348,7 @@ const createAccount = async (req, res) => {
       const whose = user.partnerProducer ? `a retailer of ${user.partnerProducer.name}` : 'a general retailer';
       return res.status(201).json({
         message: outcome === 'created' ? `${label} added as ${whose}.` : outcome === 'upgraded' ? `The existing account of ${label} is now ${whose}.` : `${label} is now ${whose}.`,
-        account: accountJson(user),
+        account: accountJson(user, req),
       });
     }
     const mobile = text(body.mobile, 15);
@@ -377,7 +379,7 @@ const createAccount = async (req, res) => {
     await user.reload({ include: accountInclude });
     return res.status(201).json({
       message: upgraded ? `The existing account of ${label} is now a ${role}.` : `${label} added as a ${role}.`,
-      account: accountJson(user),
+      account: accountJson(user, req),
     });
   } catch (err) {
     return fail(res, err, 'Could not add the account.');
@@ -410,7 +412,7 @@ const updateAccount = async (req, res) => {
       await recordProfileVersion(account, { source: 'admin', changedBy: req.user.id, transaction });
     });
     await account.reload({ include: accountInclude });
-    return res.status(200).json({ message: 'Saved.', account: accountJson(account) });
+    return res.status(200).json({ message: 'Saved.', account: accountJson(account, req) });
   } catch (err) {
     return fail(res, err, 'Could not save the account.');
   }
@@ -421,7 +423,7 @@ const blockAccount = async (req, res) => {
   try {
     const account = await ownAccount(req.params.id);
     await account.update({ isBlocked: bool(req.body?.blocked) });
-    return res.status(200).json({ message: account.isBlocked ? 'Blocked.' : 'Unblocked.', account: accountJson(account) });
+    return res.status(200).json({ message: account.isBlocked ? 'Blocked.' : 'Unblocked.', account: accountJson(account, req) });
   } catch (err) {
     return fail(res, err, 'Could not update the account.');
   }

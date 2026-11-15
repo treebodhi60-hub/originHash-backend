@@ -142,7 +142,7 @@ const history = async (req, res) => {
 const uploadFile = async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ message: 'Choose a file to upload.' });
-    const folder = ['products', 'certificates', 'warranty'].includes(req.body?.folder) ? req.body.folder : 'products';
+    const folder = ['products', 'certificates', 'warranty', 'identity'].includes(req.body?.folder) ? req.body.folder : 'products';
     const ref = await storeFile(req.file, folder);
     return res.status(201).json({ file: fileJson(ref, req, req.file.originalname) });
   } catch (err) {

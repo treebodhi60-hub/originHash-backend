@@ -35,9 +35,11 @@ const producerJson = (p, req, extra = {}) =>
     ...extra,
   };
 
-// A distributor, retailer or consumer (an app user).
-const accountJson = (u) =>
+// A distributor, retailer or consumer (an app user). With `req`, the identity document comes with a
+// link (accounts.map(accountJson) passes an index there, hence the check).
+const accountJson = (u, req) =>
   u && {
+    identityDoc: req && typeof req === 'object' ? fileJson(u.identityDocUrl, req, u.identityDocName) : u.identityDocUrl ? { name: u.identityDocName } : null,
     id: u.id,
     role: u.partnerRole || 'consumer',
     mobile: u.mobile,

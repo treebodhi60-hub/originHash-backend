@@ -1,13 +1,14 @@
 const { sequelize, User, Producer, PartnerApplication } = require('../models');
 const { recordProfileVersion } = require('../../utils/profileHistory');
 const { EMAIL_REGEX, maskMobile, text, opt, fail, httpError } = require('../util');
+const { fileJson, identityDocFrom, storeFile } = require('../files');
 
 // Retailer self-registration: any signed-in ordinary user registers (name, email, shop, city and,
 // optionally, the producer they sell for) and is a general retailer at once. The OriginHash
 // superadmin approves the request — associating them with one producer — or rejects it, which
 // leaves them a general retailer.
 
-const applicationJson = (a, { forAdmin = false } = {}) =>
+const applicationJson = (a, { forAdmin = false, req = null } = {}) =>
   a && {
     id: a.id,
     role: a.role,
@@ -29,6 +30,7 @@ const applicationJson = (a, { forAdmin = false } = {}) =>
             email: a.user.email,
             partnerRole: a.user.partnerRole,
             isBlocked: a.user.isBlocked,
+            identityDoc: req ? fileJson(a.user.identityDocUrl, req, a.user.identityDocName) : null,
           },
         }
       : {}),
@@ -53,6 +55,8 @@ const myApplication = async (req, res) => {
       producerId: req.user.partnerProducerId || null,
       producerName: req.user.partnerProducerId ? (await Producer.findByPk(req.user.partnerProducerId, { attributes: ['name'] }))?.name || null : null,
       application: applicationJson(application),
+      // Their identity document, if they've given one (needed to register).
+      identityDoc: fileJson(req.user.identityDocUrl, req, req.user.identityDocName),
       producers: producers.map((p) => ({ id: p.id, name: p.name })),
     });
   } catch (err) {
@@ -60,13 +64,27 @@ const myApplication = async (req, res) => {
   }
 };
 
-// POST /api/connect/me/retailer-application { name, email?, businessName?, city, address?, producerId?, note? }
+// POST /api/connect/me/identity — upload an identity document (image or PDF) before registering.
+const uploadIdentity = async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ message: 'Choose an image or PDF of your ID.' });
+    const ref = await storeFile(req.file, 'identity');
+    return res.status(201).json({ file: fileJson(ref, req, req.file.originalname) });
+  } catch (err) {
+    return fail(res, err, "Couldn't upload the file. Please try again.");
+  }
+};
+
+// POST /api/connect/me/retailer-application { name, email?, businessName?, city, address?, producerId?, note?, identityDoc }
 // Registering makes the user a general retailer straight away (they can mark sold any batch open
-// to all retailers); OriginHash's approval associates them with a producer.
+// to all retailers); OriginHash's approval associates them with a producer. An identity document
+// is required (unless they already gave one).
 const apply = async (req, res) => {
   try {
     if (!mayApply(req)) throw httpError(409, req.chainRole === 'retailer' ? 'You are already a retailer of a producer.' : "Your account can't register as a retailer.");
     const body = req.body || {};
+    const identity = identityDocFrom(body.identityDoc);
+    if (!identity && !req.user.identityDocUrl) throw httpError(400, 'Upload an identity document (an image or PDF of your ID).', 'identityDoc');
     const name = text(body.name, 120) || req.user.name;
     if (!name) throw httpError(400, 'Enter your name.', 'name');
     const email = opt(body.email, 150);
@@ -91,6 +109,7 @@ const apply = async (req, res) => {
           ...(businessName ? { businessName } : {}),
           city,
           ...(address ? { address } : {}),
+          ...(identity || {}),
           partnerRole: 'retailer',
           userType: 'retailer',
           profileCompleted: true,
@@ -116,7 +135,10 @@ const apply = async (req, res) => {
 
 // ---------- OriginHash superadmin ----------
 
-const adminIncludes = [producerInclude, { model: User, as: 'user', attributes: ['id', 'name', 'mobile', 'email', 'partnerRole', 'isBlocked'] }];
+const adminIncludes = [
+  producerInclude,
+  { model: User, as: 'user', attributes: ['id', 'name', 'mobile', 'email', 'partnerRole', 'isBlocked', 'identityDocUrl', 'identityDocName'] },
+];
 
 // GET /api/connect/admin/retailer-applications?status=pending|approved|rejected
 const listApplications = async (req, res) => {
@@ -126,7 +148,7 @@ const listApplications = async (req, res) => {
       PartnerApplication.findAll({ where: { status }, include: adminIncludes, order: [['id', status === 'pending' ? 'ASC' : 'DESC']], limit: 500 }),
       PartnerApplication.count({ where: { status: 'pending' } }),
     ]);
-    return res.status(200).json({ pending, applications: applications.map((a) => applicationJson(a, { forAdmin: true })) });
+    return res.status(200).json({ pending, applications: applications.map((a) => applicationJson(a, { forAdmin: true, req })) });
   } catch (err) {
     return fail(res, err, 'Could not load the applications.');
   }
@@ -204,4 +226,4 @@ const reject = async (req, res) => {
 // For the superadmin overview: how many are waiting.
 const pendingCount = () => PartnerApplication.count({ where: { status: 'pending' } });
 
-module.exports = { myApplication, apply, listApplications, approve, reject, pendingCount };
+module.exports = { myApplication, uploadIdentity, apply, listApplications, approve, reject, pendingCount };

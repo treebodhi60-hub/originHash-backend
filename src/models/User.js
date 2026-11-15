@@ -93,6 +93,9 @@ const User = sequelize.define(
     city: { type: DataTypes.STRING(120), allowNull: true, field: 'city' },
     // A retailer's producer: the only one whose products they may mark sold.
     partnerProducerId: { type: DataTypes.INTEGER.UNSIGNED, allowNull: true, field: 'partner_producer_id' },
+    // A retailer's identity document (image or PDF), stored like the supply-chain module's files.
+    identityDocUrl: { type: DataTypes.STRING(500), allowNull: true, field: 'identity_doc_url' },
+    identityDocName: { type: DataTypes.STRING(200), allowNull: true, field: 'identity_doc_name' },
   },
   {
     tableName: 'users',

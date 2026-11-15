@@ -11,7 +11,7 @@ const { uploadFileToS3, signedUrlFor } = require('../services/s3Service');
 // fresh, time-limited link (S3 folders aren't all public).
 
 const MAX_BYTES = 10 * 1024 * 1024;
-const FOLDERS = ['products', 'certificates', 'documents', 'warranty'];
+const FOLDERS = ['products', 'certificates', 'documents', 'warranty', 'identity'];
 const LOCAL_ROOT = path.join(__dirname, '..', '..', 'uploads');
 
 const upload = multer({
@@ -55,13 +55,42 @@ const storeFile = async (file, folder) => {
   return `/uploads/connect/${folder}/${name}`;
 };
 
-// True for references made by storeFile (so a client can't point records at any URL it likes).
+// The hosts our S3 uploads live on: the bucket's own (virtual-hosted or path-style) and, if set,
+// the public base URL's.
+const ownS3Hosts = () => {
+  const bucket = process.env.AWS_S3_BUCKET || process.env.S3_BUCKET;
+  const base = process.env.AWS_S3_PUBLIC_BASE_URL || process.env.S3_PUBLIC_BASE_URL;
+  let baseHost = null;
+  try {
+    baseHost = base ? new URL(base).hostname : null;
+  } catch {
+    baseHost = null;
+  }
+  return { bucket, baseHost };
+};
+const isOwnS3Url = (url) => {
+  const { bucket, baseHost } = ownS3Hosts();
+  if (!bucket) return false;
+  const host = url.hostname.toLowerCase();
+  if (baseHost && host === baseHost.toLowerCase()) return true;
+  const b = bucket.toLowerCase();
+  if (host.startsWith(`${b}.s3.`) || host.startsWith(`${b}.s3-`)) return host.endsWith('.amazonaws.com');
+  // Path-style: s3.<region>.amazonaws.com/<bucket>/…
+  return /^s3[.-]([a-z0-9-]+\.)?amazonaws\.com$/.test(host) && decodeURIComponent(url.pathname).startsWith(`/${bucket}/`);
+};
+
+// True for references made by storeFile (so a client can't point records at any URL it likes):
+// our own S3 bucket, or our local uploads folder.
 const isStoredRef = (ref) => {
   if (typeof ref !== 'string' || ref.length > 500) return false;
   if (ref.startsWith('/uploads/connect/')) return !ref.includes('..');
   try {
     const url = new URL(ref);
-    return url.protocol === 'https:' && /(^|\/)connect\/(products|certificates|documents|warranty)\//.test(decodeURIComponent(url.pathname));
+    return (
+      url.protocol === 'https:' &&
+      isOwnS3Url(url) &&
+      /(^|\/)connect\/(products|certificates|documents|warranty|identity)\//.test(decodeURIComponent(url.pathname))
+    );
   } catch {
     return false;
   }
@@ -83,4 +112,15 @@ const refsFrom = (list, max = 12) =>
     .filter(isStoredRef)
     .slice(0, max);
 
-module.exports = { singleFile, storeFile, isStoredRef, fileUrl, fileJson, refsFrom, FOLDERS };
+// An identity document sent back by a form ({ ref, name } or a ref): only files stored under
+// connect/identity. Resolves to the users columns, or null when none was sent.
+const identityDocFrom = (doc) => {
+  const ref = typeof doc === 'string' ? doc : doc?.ref;
+  if (!ref) return null;
+  if (!isStoredRef(ref) || !/(^|\/)connect\/identity\//.test(decodeURIComponent(ref))) {
+    throw Object.assign(new Error('Upload the identity document again.'), { status: 400, field: 'identityDoc' });
+  }
+  return { identityDocUrl: ref, identityDocName: typeof doc === 'object' && doc.name ? String(doc.name).slice(0, 200) : null };
+};
+
+module.exports = { singleFile, storeFile, isStoredRef, fileUrl, fileJson, refsFrom, identityDocFrom, FOLDERS };

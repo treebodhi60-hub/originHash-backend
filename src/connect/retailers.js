@@ -2,6 +2,7 @@ const ExcelJS = require('exceljs');
 const { sequelize, User, Producer } = require('./models');
 const { recordProfileVersion } = require('../utils/profileHistory');
 const { MOBILE_REGEX, EMAIL_REGEX, text, opt, httpError } = require('./util');
+const { identityDocFrom } = require('./files');
 
 // Creating retailers (auto-approved) for the superadmin and producers, one at a time or from an
 // Excel / CSV sheet. A retailer is an app user (mobile + OTP login) with partner_role 'retailer';
@@ -15,7 +16,8 @@ const cleanMobile = (value) => {
   return digits;
 };
 
-// { name, mobile, email?, businessName?, city?, address? } → checked fields.
+// { name, mobile, email?, businessName?, city?, address?, identityDoc? } → checked fields. The
+// identity document is optional when a producer or the superadmin adds the retailer.
 const readRetailer = (row) => {
   const name = text(row.name, 120);
   if (!name) throw httpError(400, 'Enter the name.', 'name');
@@ -23,7 +25,15 @@ const readRetailer = (row) => {
   if (!MOBILE_REGEX.test(mobile)) throw httpError(400, 'Enter a valid 10-digit mobile number.', 'mobile');
   const email = opt(row.email, 150);
   if (email && !EMAIL_REGEX.test(email)) throw httpError(400, 'Enter a valid email address.', 'email');
-  return { name, mobile, email, businessName: opt(row.businessName, 160), city: opt(row.city, 120), address: opt(row.address, 255) };
+  return {
+    name,
+    mobile,
+    email,
+    businessName: opt(row.businessName, 160),
+    city: opt(row.city, 120),
+    address: opt(row.address, 255),
+    identity: identityDocFrom(row.identityDoc),
+  };
 };
 
 // Makes `fields.mobile` a retailer of `producerId` (null = general retailer). A customer's existing
@@ -37,6 +47,7 @@ const saveRetailer = async (fields, producerId, actorId) =>
       ...(fields.businessName ? { businessName: fields.businessName } : {}),
       ...(fields.city ? { city: fields.city } : {}),
       ...(fields.address ? { address: fields.address } : {}),
+      ...(fields.identity || {}),
       partnerRole: 'retailer',
       userType: 'retailer',
       partnerProducerId: producerId || null,

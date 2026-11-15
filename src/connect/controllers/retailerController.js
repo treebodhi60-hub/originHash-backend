@@ -65,7 +65,7 @@ const listMine = async (req, res) => {
       limit: 2000,
     });
     const sold = await soldCounts(pidOf(req), retailers.map((r) => r.id));
-    return res.status(200).json({ retailers: retailers.map((r) => ({ ...accountJson(r), sold: sold.get(r.id) || 0 })) });
+    return res.status(200).json({ retailers: retailers.map((r) => ({ ...accountJson(r, req), sold: sold.get(r.id) || 0 })) });
   } catch (err) {
     return fail(res, err, 'Could not load your retailers.');
   }
@@ -75,7 +75,7 @@ const listMine = async (req, res) => {
 const createMine = async (req, res) => {
   try {
     const { user, outcome } = await saveRetailer(readRetailer(req.body || {}), pidOf(req), req.user.id);
-    return res.status(201).json({ message: singleMessage(user, outcome, req.producer.name), retailer: accountJson(user) });
+    return res.status(201).json({ message: singleMessage(user, outcome, req.producer.name), retailer: accountJson(user, req) });
   } catch (err) {
     return fail(res, err, 'Could not add the retailer.');
   }
@@ -93,8 +93,8 @@ const updateMine = async (req, res) => {
     const user = await myRetailer(req);
     const body = req.body || {};
     const fields = readRetailer({ ...body, mobile: user.mobile });
-    await user.update({ name: fields.name, email: fields.email, businessName: fields.businessName, city: fields.city, address: fields.address });
-    return res.status(200).json({ message: 'Retailer saved.', retailer: accountJson(user) });
+    await user.update({ name: fields.name, email: fields.email, businessName: fields.businessName, city: fields.city, address: fields.address, ...(fields.identity || {}) });
+    return res.status(200).json({ message: 'Retailer saved.', retailer: accountJson(user, req) });
   } catch (err) {
     return fail(res, err, 'Could not save the retailer.');
   }
