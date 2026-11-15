@@ -490,7 +490,7 @@ const currentOfferOf = (req, productId) =>
     order: [['updatedAt', 'DESC']],
   });
 
-// POST /api/connect/producer/batch-requests { productId, quantity, expiryDate, batchNo?, note? }
+// POST /api/connect/producer/batch-requests { productId, quantity, expiryDate, note? }
 // The max discount is always the product's current discount (set only in the Discounts tab).
 // QR codes are free for now; the OriginHash superadmin allots the batch.
 const createRequest = async (req, res) => {
@@ -509,17 +509,14 @@ const createRequest = async (req, res) => {
     const offer = await currentOfferOf(req, productId);
     const maxDiscountPercent = offer ? discount(offer.discountPercent) || null : null;
     if (!validDate(body.expiryDate)) throw httpError(400, 'Choose the expiry date.', 'expiryDate');
-    const batchNo = opt(body.batchNo, 80);
-    if (batchNo && (await ChainBatch.findOne({ where: { producerId: producerIdOf(req), batchNo }, attributes: ['id'] }))) {
-      throw httpError(409, 'You already have a batch with this number.', 'batchNo');
-    }
+    // No batch number: it's assigned when OriginHash allots the batch (one sequence, OHB-0001…).
     const request = await ChainBatchRequest.create({
       producerId: producerIdOf(req),
       productId,
       quantity,
       maxDiscountPercent,
       expiryDate: body.expiryDate,
-      batchNo,
+      batchNo: null,
       note: opt(body.note, 500),
       requestedBy: req.user.id,
     });

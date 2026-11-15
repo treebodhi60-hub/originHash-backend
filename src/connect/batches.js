@@ -11,24 +11,34 @@ const { labelQrBuffer, streamQrLabelPdf } = require('../utils/stickerPdf');
 
 const MAX_QUANTITY = 5000;
 
-const defaultBatchNo = async (producerId, transaction) => {
-  const count = await ChainBatch.count({ where: { producerId }, transaction });
-  return `B${new Date().getFullYear()}-${String(count + 1).padStart(4, '0')}`;
+// Batch numbers: one sequence across OriginHash (OHB-0001, OHB-0002…), never typed in. The counter is
+// a row in oh_sequences, bumped inside the allotment's transaction: concurrent allotments wait on that
+// row (no shared numbers), and a failed allotment rolls the counter back (no gaps). Without a
+// transaction, `nextBatchNo()` only peeks — for forms to show the number ahead of time.
+const batchNoOf = (n) => `OHB-${String(n).padStart(4, '0')}`;
+const nextBatchNo = async (transaction) => {
+  if (!transaction) {
+    const [rows] = await sequelize.query("SELECT value FROM oh_sequences WHERE name = 'batch_no'");
+    return batchNoOf(Number(rows[0]?.value || 0) + 1);
+  }
+  await sequelize.query(
+    "INSERT INTO oh_sequences (name, value) VALUES ('batch_no', LAST_INSERT_ID(1)) ON DUPLICATE KEY UPDATE value = LAST_INSERT_ID(value + 1)",
+    { transaction }
+  );
+  const [rows] = await sequelize.query('SELECT LAST_INSERT_ID() AS n', { transaction });
+  return batchNoOf(Number(rows[0].n));
 };
 
 // Creates the batch and its units in one transaction. A token or coupon clash is vanishingly rare,
 // so on one the whole batch is simply tried again. Resolves to the batch.
-const allotBatch = async ({ producerId, productId = null, batchNo, quantity, maxDiscountPercent, expiryDate, notes = null, allottedBy }, outer) => {
+const allotBatch = async ({ producerId, productId = null, quantity, maxDiscountPercent, expiryDate, notes = null, allottedBy }, outer) => {
   if (!Number.isInteger(quantity) || quantity < 1 || quantity > MAX_QUANTITY) {
     throw httpError(400, `A batch can have between 1 and ${MAX_QUANTITY.toLocaleString('en-IN')} units.`, 'quantity');
   }
   const run = async (transaction) => {
-    const number = batchNo || (await defaultBatchNo(producerId, transaction));
-    if (await ChainBatch.findOne({ where: { producerId, batchNo: number }, attributes: ['id'], transaction })) {
-      throw httpError(409, `This producer already has a batch numbered ${number}.`, 'batchNo');
-    }
+    const batchNo = await nextBatchNo(transaction);
     const batch = await ChainBatch.create(
-      { producerId, productId, batchNo: number, quantity, maxDiscountPercent, expiryDate, notes, allottedBy },
+      { producerId, productId, batchNo, quantity, maxDiscountPercent, expiryDate, notes, allottedBy },
       { transaction }
     );
     const tokens = new Set();
@@ -201,4 +211,4 @@ const sendBatchFile = async (req, res, batch, producerName) => {
   return streamBatchPdf(res, batch, producerName, units);
 };
 
-module.exports = { MAX_QUANTITY, PRINT_DEFAULTS, allotBatch, batchTotals, sendBatchFile, sendUnitQr, readPrintLayout };
+module.exports = { MAX_QUANTITY, PRINT_DEFAULTS, nextBatchNo, allotBatch, batchTotals, sendBatchFile, sendUnitQr, readPrintLayout };

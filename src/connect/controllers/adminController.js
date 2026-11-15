@@ -2,7 +2,7 @@ const bcrypt = require('bcryptjs');
 const { Op, fn, col } = require('sequelize');
 const { sequelize, User, Producer, ProducerProduct, ChainBatch, ChainBatchRequest, ChainUnit, PartnerApplication } = require('../models');
 const { recordProfileVersion } = require('../../utils/profileHistory');
-const { allotBatch, batchTotals, sendBatchFile, sendUnitQr, readPrintLayout } = require('../batches');
+const { allotBatch, batchTotals, sendBatchFile, sendUnitQr, readPrintLayout, nextBatchNo } = require('../batches');
 const { withLoginStats, loginHistory } = require('../logins');
 const { queryHistory } = require('../history');
 const { readRetailer, saveRetailer } = require('../retailers');
@@ -454,7 +454,7 @@ const listRequests = async (req, res) => {
 };
 
 // The batch fields the superadmin confirms: quantity, max discount (0 / empty = no discount),
-// expiry date, batch number and product. `fallback` fills in whatever the body leaves out.
+// expiry date and product. `fallback` fills in whatever the body leaves out.
 const readBatchFields = async (body, producerId, fallback = {}) => {
   const pick = (key) => (body[key] !== undefined ? body[key] : fallback[key]);
   const quantity = Number(pick('quantity'));
@@ -473,12 +473,12 @@ const readBatchFields = async (body, producerId, fallback = {}) => {
     maxDiscountPercent,
     expiryDate,
     productId,
-    batchNo: opt(pick('batchNo'), 80),
+    // No batchNo: batches are numbered automatically (OHB-0001…, see ../batches).
     notes: opt(body.notes, 500),
   };
 };
 
-// POST /api/connect/admin/batch-requests/:id/allot { quantity?, maxDiscountPercent?, expiryDate?, batchNo?, productId?, notes? }
+// POST /api/connect/admin/batch-requests/:id/allot { notes?, decisionNote? } — the rest comes from the request.
 const allotRequest = async (req, res) => {
   try {
     const batch = await sequelize.transaction(async (transaction) => {
@@ -487,16 +487,17 @@ const allotRequest = async (req, res) => {
       if (request.status !== 'pending') throw httpError(409, `This request was already ${request.status}.`);
       const producer = await Producer.findByPk(request.producerId, { transaction });
       if (producer.isBlocked) throw httpError(409, 'This producer is blocked. Unblock them first.');
-      // What the producer fixed in the request — the product, its max discount and the expiry date —
-      // stays: OriginHash can't change it.
+      // What the producer fixed in the request — units, the product, its max discount and the expiry
+      // date — stays: OriginHash can't change it.
       const body = { ...(req.body || {}) };
+      delete body.quantity;
       delete body.maxDiscountPercent;
       delete body.expiryDate;
       if (request.productId) delete body.productId;
       const fields = await readBatchFields(body, request.producerId, request.get({ plain: true }));
       const made = await allotBatch({ ...fields, producerId: request.producerId, allottedBy: req.user.id }, transaction);
       await request.update(
-        { status: 'allotted', decidedBy: req.user.id, decidedAt: new Date(), decisionNote: opt(req.body?.decisionNote, 500), batchId: made.id },
+        { status: 'allotted', decidedBy: req.user.id, decidedAt: new Date(), decisionNote: opt(req.body?.decisionNote, 500), batchId: made.id, batchNo: made.batchNo },
         { transaction }
       );
       return made;
@@ -544,7 +545,17 @@ const listBatches = async (req, res) => {
   }
 };
 
-// POST /api/connect/admin/batches { producerId, quantity, maxDiscountPercent, expiryDate, batchNo?, productId?, notes? }
+// POST /api/connect/admin/batches { producerId, quantity, maxDiscountPercent, expiryDate, productId, notes? }
+
+// GET /api/connect/admin/batches/next-number (and /producer/batches/next-number) — the number the
+// next batch will most likely get.
+const nextNumber = async (req, res) => {
+  try {
+    return res.status(200).json({ batchNo: await nextBatchNo() });
+  } catch (err) {
+    return fail(res, err, 'Could not work out the next batch number.');
+  }
+};
 // — allots a batch without a request.
 const createBatch = async (req, res) => {
   try {
@@ -645,6 +656,7 @@ const unitQr = async (req, res) => {
 module.exports = {
   unitQr,
   history,
+  nextNumber,
   updatePrintLayout,
   overview,
   uploadFile,

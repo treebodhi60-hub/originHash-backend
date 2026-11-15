@@ -71,6 +71,7 @@ const ChainBatch = sequelize.define(
     id: pk,
     producerId: fk(false),
     productId: fk(),
+    // OHB-0001, OHB-0002… — one sequence across OriginHash (see ./batches), unique.
     batchNo: { type: DataTypes.STRING(80), allowNull: false },
     quantity: { type: DataTypes.INTEGER.UNSIGNED, allowNull: false },
     maxDiscountPercent: { type: DataTypes.DECIMAL(5, 2), allowNull: true },
