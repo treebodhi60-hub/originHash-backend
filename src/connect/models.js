@@ -189,6 +189,9 @@ const ChatMessage = sequelize.define(
     senderType: { type: DataTypes.ENUM('consumer', 'producer'), allowNull: false },
     senderUserId: fk(),
     body: { type: DataTypes.TEXT, allowNull: false },
+    // An optional photo (connect/chat); a message has text, a photo or both.
+    imageUrl: { type: DataTypes.STRING(500), allowNull: true },
+    imageName: { type: DataTypes.STRING(200), allowNull: true },
   },
   opts('brand_chat_messages')
 );

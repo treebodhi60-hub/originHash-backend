@@ -94,6 +94,7 @@ pr.post('/units/:id/warranty', producer.addWarranty);
 pr.get('/chats', chat.producerThreads);
 pr.get('/chats/:id', chat.producerMessages);
 pr.post('/chats/:id/messages', chat.producerSend);
+pr.post('/chat-photo', singleFile, chat.uploadPhoto);
 pr.put('/chats/:id/assign', producerAdmin, chat.assignThread);
 router.use('/producer', pr);
 
@@ -113,9 +114,12 @@ me.post('/uploads', allow('retailer'), singleFile, async (req, res) => {
     return fail(res, err, "Couldn't upload the file. Please try again.");
   }
 });
-me.get('/chats', allow('consumer'), chat.consumerThreads);
-me.get('/chats/:producerId', allow('consumer'), chat.consumerMessages);
-me.post('/chats/:producerId/messages', allow('consumer'), chat.consumerSend);
+// Chat with brand, as a customer: consumers, and retailers / distributors (they buy products too).
+const customer = allow('consumer', 'retailer', 'distributor');
+me.get('/chats', customer, chat.consumerThreads);
+me.get('/chats/:producerId', customer, chat.consumerMessages);
+me.post('/chats/:producerId/messages', customer, chat.consumerSend);
+me.post('/chat-photo', customer, singleFile, chat.uploadPhoto);
 router.use('/me', me);
 
 // ---------- The QR codes ----------

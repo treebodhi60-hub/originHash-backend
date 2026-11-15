@@ -1,25 +1,37 @@
 const { Op } = require('sequelize');
 const { sequelize, User, Producer, ChainBatch, ChainUnit, ProducerProduct, ChatThread, ChatMessage } = require('../models');
 const { cleanToken, maskMobile, serialOf, text, fail, httpError } = require('../util');
+const { fileJson, isStoredRef, storeFile } = require('../files');
 
-// "Chat with brand": a consumer writes to a producer about a product they scanned; the producer's
+// "Chat with brand": a customer writes to a producer about a product they scanned; the producer's
 // admin and the staff allowed to chat answer (staff see conversations assigned to them or to nobody).
-// The producer can switch chat off; consumers then can't start or continue conversations.
+// Customers are consumers — and retailers and distributors, who buy products too. Messages carry
+// text, a photo, or both. The producer can switch chat off; customers then can't start or continue
+// conversations.
 
 const BODY_MAX = 2000;
 
-const messageJson = (m) => ({
+const messageJson = (m, req) => ({
   id: m.id,
   at: m.createdAt,
   from: m.senderType,
   body: m.body,
+  image: m.imageUrl ? fileJson(m.imageUrl, req, m.imageName) : null,
   sender: m.senderType === 'producer' ? (m.sender ? m.sender.name || m.sender.username : 'Brand') : null,
 });
 
 const threadJson = (t, side) => ({
   id: t.id,
   producer: t.producer ? { id: t.producer.id, name: t.producer.name, chatEnabled: t.producer.chatEnabled } : undefined,
-  consumer: t.consumer ? { id: t.consumer.id, name: t.consumer.name || 'Customer', mobile: maskMobile(t.consumer.mobile), city: t.consumer.city } : undefined,
+  consumer: t.consumer
+    ? {
+        id: t.consumer.id,
+        name: t.consumer.businessName || t.consumer.name || 'Customer',
+        mobile: maskMobile(t.consumer.mobile),
+        city: t.consumer.city,
+        role: t.consumer.partnerRole || 'consumer',
+      }
+    : undefined,
   unit: t.unit ? { id: t.unit.id, serial: serialOf(t.unit.id), productName: t.unit.batch?.product?.name || null } : null,
   assignee: t.assignee ? { id: t.assignee.id, name: t.assignee.name || t.assignee.username } : null,
   lastMessageAt: t.lastMessageAt,
@@ -42,17 +54,38 @@ const messagesOf = async (threadId, after) =>
     limit: 500,
   });
 
-const readBody = (req) => {
+// { body?, image? } → the message columns. Text, a photo (uploaded to connect/chat), or both.
+const readMessage = (req) => {
   const body = text(req.body?.body, BODY_MAX + 1);
-  if (!body) throw httpError(400, 'Write a message.');
   if (body.length > BODY_MAX) throw httpError(400, `Keep messages to ${BODY_MAX} characters.`);
-  return body;
+  const image = req.body?.image;
+  const ref = typeof image === 'string' ? image : image?.ref;
+  if (ref && (!isStoredRef(ref) || !/(^|\/)connect\/chat\//.test(decodeURIComponent(ref)))) throw httpError(400, 'Attach the photo again.');
+  if (!body && !ref) throw httpError(400, 'Write a message or attach a photo.');
+  return {
+    body,
+    imageUrl: ref || null,
+    imageName: ref && typeof image === 'object' && image.name ? String(image.name).slice(0, 200) : null,
+  };
+};
+const previewOf = (m) => (m.body ? m.body.slice(0, 200) : '📷 Photo');
+
+// POST …/chat-photo (multipart: file) — a photo to attach to the next message.
+const uploadPhoto = async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ message: 'Choose a photo.' });
+    if (!req.file.mimetype.startsWith('image/')) return res.status(400).json({ message: 'Only photos can be sent in chat.' });
+    const ref = await storeFile(req.file, 'chat');
+    return res.status(201).json({ file: fileJson(ref, req, req.file.originalname) });
+  } catch (err) {
+    return fail(res, err, "Couldn't upload the photo. Please try again.");
+  }
 };
 
 // ---------- Producer side ----------
 
 const canChat = (req) => req.user.producerRole === 'admin' || req.user.canChat;
-const CONSUMER_ATTRS = ['id', 'name', 'mobile', 'city'];
+const CONSUMER_ATTRS = ['id', 'name', 'mobile', 'city', 'businessName', 'partnerRole'];
 const ASSIGNEE_ATTRS = ['id', 'name', 'username'];
 
 // Staff see the conversations assigned to them and the unassigned ones; the admin sees all.
@@ -99,7 +132,7 @@ const producerMessages = async (req, res) => {
     const thread = await producerThread(req);
     const messages = await messagesOf(thread.id, Number(req.query.after) || 0);
     if (thread.unreadForProducer) await thread.update({ unreadForProducer: 0 }, { silent: true });
-    return res.status(200).json({ thread: threadJson(thread, 'producer'), messages: messages.map(messageJson) });
+    return res.status(200).json({ thread: threadJson(thread, 'producer'), messages: messages.map((m) => messageJson(m, req)) });
   } catch (err) {
     return fail(res, err, 'Could not load the conversation.');
   }
@@ -109,17 +142,17 @@ const producerMessages = async (req, res) => {
 const producerSend = async (req, res) => {
   try {
     const thread = await producerThread(req);
-    const body = readBody(req);
+    const msg = readMessage(req);
     const message = await sequelize.transaction(async (transaction) => {
-      const made = await ChatMessage.create({ threadId: thread.id, senderType: 'producer', senderUserId: req.user.id, body }, { transaction });
+      const made = await ChatMessage.create({ threadId: thread.id, senderType: 'producer', senderUserId: req.user.id, ...msg }, { transaction });
       await thread.update(
-        { lastMessageAt: made.createdAt, lastMessagePreview: body.slice(0, 200), unreadForConsumer: thread.unreadForConsumer + 1, unreadForProducer: 0 },
+        { lastMessageAt: made.createdAt, lastMessagePreview: previewOf(msg), unreadForConsumer: thread.unreadForConsumer + 1, unreadForProducer: 0 },
         { transaction }
       );
       return made;
     });
     message.sender = req.user;
-    return res.status(201).json({ message: messageJson(message) });
+    return res.status(201).json({ message: messageJson(message, req) });
   } catch (err) {
     return fail(res, err, 'Could not send the message.');
   }
@@ -172,7 +205,7 @@ const consumerMessages = async (req, res) => {
     return res.status(200).json({
       producer: { id: producer.id, name: producer.name, chatEnabled: producer.chatEnabled && !producer.isBlocked },
       thread: thread ? threadJson(thread, 'consumer') : null,
-      messages: messages.map(messageJson),
+      messages: messages.map((m) => messageJson(m, req)),
     });
   } catch (err) {
     return fail(res, err, 'Could not load the conversation.');
@@ -188,7 +221,7 @@ const consumerSend = async (req, res) => {
     const producer = await Producer.findByPk(req.params.producerId);
     if (!producer) throw httpError(404, 'Brand not found.');
     if (!producer.chatEnabled || producer.isBlocked) throw httpError(409, `${producer.name} isn't taking chat messages right now.`);
-    const body = readBody(req);
+    const msg = readMessage(req);
 
     let unitId = null;
     const token = cleanToken(req.body?.unitToken);
@@ -203,12 +236,12 @@ const consumerSend = async (req, res) => {
         if (!unitId) throw httpError(400, 'Start a chat from the QR code on one of this brand’s products.');
         thread = await ChatThread.create({ producerId: producer.id, consumerId: account.id, unitId }, { transaction });
       }
-      const made = await ChatMessage.create({ threadId: thread.id, senderType: 'consumer', senderUserId: account.id, body }, { transaction });
+      const made = await ChatMessage.create({ threadId: thread.id, senderType: 'consumer', senderUserId: account.id, ...msg }, { transaction });
       await thread.update(
         {
           unitId: unitId || thread.unitId,
           lastMessageAt: made.createdAt,
-          lastMessagePreview: body.slice(0, 200),
+          lastMessagePreview: previewOf(msg),
           unreadForProducer: thread.unreadForProducer + 1,
           unreadForConsumer: 0,
         },
@@ -216,10 +249,10 @@ const consumerSend = async (req, res) => {
       );
       return made;
     });
-    return res.status(201).json({ message: messageJson(message) });
+    return res.status(201).json({ message: messageJson(message, req) });
   } catch (err) {
     return fail(res, err, 'Could not send the message.');
   }
 };
 
-module.exports = { producerThreads, producerMessages, producerSend, assignThread, consumerThreads, consumerMessages, consumerSend };
+module.exports = { producerThreads, producerMessages, producerSend, assignThread, consumerThreads, consumerMessages, consumerSend, uploadPhoto };
