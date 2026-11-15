@@ -554,7 +554,7 @@ const getBatch = async (req, res) => {
     if (!batch) return res.status(404).json({ message: 'Batch not found.' });
     const units = await ChainUnit.findAll({
       where: { batchId: batch.id },
-      include: [{ model: User, as: 'seller', attributes: ['id', 'name', 'businessName', 'city', 'isSuperAdmin'] }],
+      include: [{ model: User, as: 'seller', attributes: ['id', 'name', 'businessName', 'city', 'isSuperAdmin', 'producerId'] }],
       order: [['serialNo', 'ASC']],
     });
     const totals = await batchTotals([batch.id]);

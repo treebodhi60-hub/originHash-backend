@@ -35,7 +35,7 @@ const { MOBILE_REGEX, EMAIL_REGEX, USERNAME_REGEX, text, opt, bool, validDate, t
 
 const producerIdOf = (req) => req.producer.id;
 // What timelines show about a person.
-const USER_ATTRS = ['id', 'name', 'username', 'mobile', 'businessName', 'city', 'isSuperAdmin'];
+const USER_ATTRS = ['id', 'name', 'username', 'mobile', 'businessName', 'city', 'isSuperAdmin', 'producerId'];
 
 // ---------- Account, settings and analytics ----------
 

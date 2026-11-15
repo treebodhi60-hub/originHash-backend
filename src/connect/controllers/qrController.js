@@ -19,14 +19,15 @@ const { cleanToken, coordinate, serialOf, percent, todayIST, fail, httpError } =
 
 // What the two QR codes of a unit open.
 //   Retailer QR (/rq/:token): for the trade. Producers, distributors and retailers scan it (recorded
-//     when the producer has Tracking on); a retailer associated with the unit's producer, or the
-//     OriginHash superadmin, presses Sold, once, which unlocks the consumer QR. The producer and
-//     other producers' retailers can only scan it.
+//     when the producer has Tracking on). Sold — once, unlocking the consumer QR — is pressed by
+//     the unit's own producer (admin or staff), a retailer associated with that producer, or the
+//     OriginHash superadmin. Other producers and other producers' retailers get distributor-level
+//     access: they scan it, nothing more.
 //   Consumer QR (/cq/:token): for the shopper, once the unit is sold — product info and
 //     certificates, the discount coupon, warranty, history and chat with the brand.
 
 // What pages show about a person.
-const USER_ATTRS = ['id', 'name', 'username', 'mobile', 'businessName', 'city', 'isSuperAdmin'];
+const USER_ATTRS = ['id', 'name', 'username', 'mobile', 'businessName', 'city', 'isSuperAdmin', 'producerId'];
 const userInclude = { model: User, as: 'user', attributes: USER_ATTRS };
 
 const LOCATION_WINDOW_MS = 15 * 60 * 1000;
@@ -80,11 +81,12 @@ const productBasics = (product, req) =>
 
 const ownsUnit = (req, unit) => req.chainRole === 'producer' && req.producer.id === unit.batch.producerId;
 
-// Who may press Sold: the superadmin, or a retailer associated with the unit's producer. Retailers
-// of other producers can scan the retailer QR but not sell it.
+// Who may press Sold: the superadmin, the unit's own producer, or a retailer associated with that
+// producer. Other producers and their retailers can scan the retailer QR but not sell it.
 const isProducersRetailer = (req, producerId) =>
   req.chainRole === 'retailer' && Boolean(req.user.partnerProducerId) && Number(req.user.partnerProducerId) === Number(producerId);
-const mayMarkSold = (req, producerId) => req.chainRole === 'admin' || isProducersRetailer(req, producerId);
+const isOwnProducer = (req, producerId) => req.chainRole === 'producer' && Number(req.producer.id) === Number(producerId);
+const mayMarkSold = (req, producerId) => req.chainRole === 'admin' || isOwnProducer(req, producerId) || isProducersRetailer(req, producerId);
 
 // ---------- Retailer QR ----------
 
@@ -93,9 +95,9 @@ const retailerView = async (req, unit, scan) => {
   const role = req.chainRole;
   const sold = unit.status === 'sold';
   const canSell = !sold && mayMarkSold(req, batch.producerId);
-  // A retailer of another producer (or one not yet associated with a producer) can't sell it.
-  const sellBlocked = !sold && role === 'retailer' && !canSell;
-  const sellerIsMe = sold && role === 'retailer' && unit.soldByUserId === req.user.id;
+  // Another producer, a retailer of another producer, or a retailer not yet associated with one.
+  const sellBlocked = !sold && (role === 'retailer' || role === 'producer') && !canSell;
+  const sellerIsMe = sold && (role === 'retailer' || role === 'producer') && unit.soldByUserId === req.user.id;
   const canAddWarranty = sold && (sellerIsMe || role === 'admin' || ownsUnit(req, unit));
   const warranties = canAddWarranty
     ? await ChainWarranty.findAll({
@@ -116,7 +118,7 @@ const retailerView = async (req, unit, scan) => {
     soldBy: sellerJson(unit),
     viewer: viewerJson(req),
     canSell,
-    sellBlocked: sellBlocked ? (req.user.partnerProducerId ? 'otherProducer' : 'noProducer') : null,
+    sellBlocked: sellBlocked ? (role === 'producer' || req.user.partnerProducerId ? 'otherProducer' : 'noProducer') : null,
     canAddWarranty,
     isOwnProducer: ownsUnit(req, unit),
     trackingEnabled: batch.producer.trackingEnabled,
@@ -142,9 +144,7 @@ const openRetailerQr = async (req, res) => {
         viewer: viewerJson(req),
       });
     }
-    if (role === 'producer' && !ownsUnit(req, unit)) {
-      throw httpError(403, 'This QR code belongs to another producer.');
-    }
+    // Another producer's QR: scanned like a distributor would (recorded, no Sold, no warranty).
     let scan = null;
     if (unit.batch.producer.trackingEnabled) {
       scan = await ChainScan.create({ unitId: unit.id, qrType: 'retailer', action: 'scan', token: crypto.randomUUID(), ...scanColumns(req) });
@@ -173,7 +173,7 @@ const markSold = async (req, res) => {
       const batch = await ChainBatch.findByPk(locked.batchId, { include: [{ model: Producer, as: 'producer' }], transaction });
       if (batch.producer.isBlocked) throw httpError(409, "This producer's account is suspended, so the product can't be sold through OriginHash right now.");
       if (!mayMarkSold(req, batch.producerId)) {
-        throw httpError(403, `Only retailers associated with ${batch.producer.name} can mark this product sold.`);
+        throw httpError(403, `Only ${batch.producer.name} or its retailers can mark this product sold.`);
       }
 
       // The scan of this page that led to the sale (who scanned), when it was recorded.

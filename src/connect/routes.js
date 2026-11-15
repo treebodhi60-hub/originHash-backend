@@ -108,7 +108,8 @@ router.use('/me', me);
 
 // ---------- The QR codes ----------
 router.post('/qr/r/:token/open', maybeSignedIn, qr.openRetailerQr);
-router.post('/qr/r/:token/sold', signedIn, allow('retailer', 'admin'), qr.markSold);
+// Sold: further limited in markSold to the unit's own producer and that producer's retailers.
+router.post('/qr/r/:token/sold', signedIn, allow('retailer', 'admin', 'producer'), qr.markSold);
 router.post('/qr/r/:token/warranty', signedIn, allow('retailer', 'admin', 'producer'), qr.addRetailerWarranty);
 router.patch('/qr/scans/:scanToken/location', qr.addScanLocation);
 router.post('/qr/c/:token/open', maybeSignedIn, qr.openConsumerQr);

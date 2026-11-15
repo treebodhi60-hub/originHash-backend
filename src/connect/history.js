@@ -7,12 +7,16 @@ const { unitIdFromSerial, serialOf } = require('./util');
 // for one producer (their History tab) or for all producers (the OriginHash superadmin).
 // Filterable, searchable (serial, batch, product, producer, person, place) and paginated.
 
+// A producer user scanning another producer's QR counts as the trade (distributor-level), not as
+// that producer's team.
+const OWN_TEAM = "s.actor_type = 'producer' AND a.producer_id = b.producer_id";
 const FILTERS = {
   all: '',
-  trade: "AND s.qr_type = 'retailer' AND s.action = 'scan' AND s.actor_type IN ('distributor', 'retailer')",
+  trade: `AND s.qr_type = 'retailer' AND s.action = 'scan'
+          AND (s.actor_type IN ('distributor', 'retailer') OR (s.actor_type = 'producer' AND NOT (a.producer_id <=> b.producer_id)))`,
   sold: "AND s.action = 'sold'",
   consumer: "AND s.qr_type = 'consumer'",
-  team: "AND s.actor_type = 'producer'",
+  team: `AND ${OWN_TEAM}`,
   mine: 'AND s.user_id = :me',
 };
 
@@ -34,6 +38,7 @@ const queryHistory = async ({ producerId = null, me, query = {} }) => {
       JOIN producers pr ON pr.id = b.producer_id
       LEFT JOIN producer_products p ON p.id = b.product_id
       LEFT JOIN users a ON a.id = s.user_id
+      LEFT JOIN producers ap ON ap.id = a.producer_id
      WHERE 1 = 1 ${FILTERS[filter]} ${search}`;
   const replacements = { pid: producerId, me, like, serialId };
   const [{ total }] = await sequelize.query(`SELECT COUNT(*) AS total ${from}`, { replacements, type: QueryTypes.SELECT });
@@ -44,7 +49,8 @@ const queryHistory = async ({ producerId = null, me, query = {} }) => {
             s.latitude, s.longitude, s.location_name AS locationName, s.unit_id AS unitId, u.status AS unitStatus,
             b.id AS batchId, b.batch_no AS batchNo, pr.id AS producerId, pr.name AS producerName,
             p.id AS productId, p.name AS productName,
-            a.name AS userName, a.business_name AS businessName, a.username, a.mobile, a.city
+            a.name AS userName, a.business_name AS businessName, a.username, a.mobile, a.city,
+            (a.producer_id <=> b.producer_id) AS ownTeam, ap.name AS actorProducerName
        ${from}
       ORDER BY s.id DESC LIMIT :limit OFFSET :offset`,
     { replacements: { ...replacements, limit: pageSize, offset: (page - 1) * pageSize }, type: QueryTypes.SELECT }
@@ -61,10 +67,16 @@ const queryHistory = async ({ producerId = null, me, query = {} }) => {
       action: r.action,
       actorType: r.actorType,
       isYou: r.userId === me,
-      // Who it was (no phone numbers: consumers show by name or a masked number).
-      by: (({ mobile, ...who }) => who)(
-        personOf({ actorType: r.actorType, user: r.userId ? { name: r.userName, businessName: r.businessName, username: r.username, mobile: r.mobile, city: r.city } : null })
-      ),
+      // For producer users: the unit's own team, or another producer scanning it.
+      ownTeam: r.actorType === 'producer' ? Boolean(Number(r.ownTeam)) : undefined,
+      // Who it was (no phone numbers: consumers show by name or a masked number). Another
+      // producer's people show as their company.
+      by:
+        r.actorType === 'producer' && !Number(r.ownTeam) && r.actorProducerName
+          ? { type: 'producer', name: r.actorProducerName, contact: r.userName }
+          : (({ mobile, ...who }) => who)(
+              personOf({ actorType: r.actorType, user: r.userId ? { name: r.userName, businessName: r.businessName, username: r.username, mobile: r.mobile, city: r.city } : null })
+            ),
       location: r.latitude !== null && r.longitude !== null ? { latitude: Number(r.latitude), longitude: Number(r.longitude), name: r.locationName } : null,
       unitId: r.unitId,
       serial: serialOf(r.unitId),

@@ -172,6 +172,8 @@ const sellerJson = (unit) => {
   const u = unit.seller;
   if (!u) return null;
   if (u.isSuperAdmin) return { type: 'admin', name: 'OriginHash', city: null };
+  // The producer's own team can sell its products (only theirs, so the unit's producer is theirs).
+  if (u.producerId) return { type: 'producer', name: unit.batch?.producer?.name || u.name || 'Producer', city: null };
   return { type: 'retailer', name: u.businessName || u.name || 'Retailer', city: u.city };
 };
 
