@@ -20,8 +20,10 @@ const FILTERS = {
   mine: 'AND s.user_id = :me',
 };
 
-// `producerId` null = every producer. `query` is req.query: { filter, q, page, pageSize }.
-const queryHistory = async ({ producerId = null, me, query = {} }) => {
+// `producerId` null = every producer. `onlyMine`: just `me`'s own scans (a distributor's or
+// retailer's history), with each unit's QR token so the row can open that QR page.
+// `query` is req.query: { filter, q, page, pageSize }.
+const queryHistory = async ({ producerId = null, me, onlyMine = false, query = {} }) => {
   const filter = FILTERS[query.filter] !== undefined ? query.filter : 'all';
   const pageSize = [10, 20, 50].includes(Number(query.pageSize)) ? Number(query.pageSize) : 20;
   const q = String(query.q || '').trim().slice(0, 100);
@@ -39,7 +41,7 @@ const queryHistory = async ({ producerId = null, me, query = {} }) => {
       LEFT JOIN producer_products p ON p.id = b.product_id
       LEFT JOIN users a ON a.id = s.user_id
       LEFT JOIN producers ap ON ap.id = a.producer_id
-     WHERE 1 = 1 ${FILTERS[filter]} ${search}`;
+     WHERE 1 = 1 ${onlyMine ? 'AND s.user_id = :me' : ''} ${FILTERS[filter]} ${search}`;
   const replacements = { pid: producerId, me, like, serialId };
   const [{ total }] = await sequelize.query(`SELECT COUNT(*) AS total ${from}`, { replacements, type: QueryTypes.SELECT });
   const totalPages = Math.max(1, Math.ceil(Number(total) / pageSize));
@@ -50,7 +52,8 @@ const queryHistory = async ({ producerId = null, me, query = {} }) => {
             b.id AS batchId, b.batch_no AS batchNo, pr.id AS producerId, pr.name AS producerName,
             p.id AS productId, p.name AS productName,
             a.name AS userName, a.business_name AS businessName, a.username, a.mobile, a.city,
-            (a.producer_id <=> b.producer_id) AS ownTeam, ap.name AS actorProducerName
+            (a.producer_id <=> b.producer_id) AS ownTeam, ap.name AS actorProducerName,
+            u.retailer_token AS retailerToken, u.consumer_token AS consumerToken
        ${from}
       ORDER BY s.id DESC LIMIT :limit OFFSET :offset`,
     { replacements: { ...replacements, limit: pageSize, offset: (page - 1) * pageSize }, type: QueryTypes.SELECT }
@@ -84,6 +87,8 @@ const queryHistory = async ({ producerId = null, me, query = {} }) => {
       batch: { id: r.batchId, batchNo: r.batchNo },
       producer: { id: r.producerId, name: r.producerName },
       product: r.productId ? { id: r.productId, name: r.productName } : null,
+      // Only on someone's own history: the QR they scanned, to open it again.
+      ...(onlyMine ? { token: r.qrType === 'consumer' ? r.consumerToken : r.retailerToken } : {}),
     })),
   };
 };

@@ -28,10 +28,16 @@ const updateMe = async (req, res) => {
     if (userType && !USER_TYPES.includes(userType)) {
       return res.status(400).json({ message: 'Invalid user category.' });
     }
+    // Retailer and distributor are supply-chain roles OriginHash gives (users.partner_role); nobody
+    // picks them for themselves, and distributors' / retailers' / producers' type follows their role.
+    const roleManaged = Boolean(user.partnerRole || user.producerId);
+    if (userType && !roleManaged && ['retailer', 'distributor'].includes(userType)) {
+      return res.status(400).json({ message: 'Retailer and distributor accounts are set up by OriginHash. Retailers can register from the menu (Become a retailer).' });
+    }
 
     if (name !== undefined) user.name = name;
     if (email !== undefined) user.email = email;
-    if (userType !== undefined) user.userType = userType;
+    if (userType !== undefined && !roleManaged) user.userType = userType;
     if (address !== undefined) user.address = address;
 
     if (req.file) {
