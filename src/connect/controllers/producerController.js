@@ -12,6 +12,7 @@ const {
   User,
 } = require('../models');
 const { batchTotals, sendBatchFile, sendUnitQr, MAX_QUANTITY } = require('../batches');
+const { withLoginStats, loginHistory } = require('../logins');
 const { storeFile, fileJson, isStoredRef, refsFrom } = require('../files');
 const { publicUser } = require('../../controllers/authController');
 const { recordProfileVersion } = require('../../utils/profileHistory');
@@ -143,9 +144,24 @@ const uploadFile = async (req, res) => {
 const listUsers = async (req, res) => {
   try {
     const users = await User.findAll({ where: { producerId: producerIdOf(req) }, order: [['producerRole', 'ASC'], ['createdAt', 'ASC']] });
-    return res.status(200).json({ users: users.map(producerUserJson) });
+    return res.status(200).json({ users: await withLoginStats(users, producerUserJson) });
   } catch (err) {
     return fail(res, err, 'Could not load your team.');
+  }
+};
+
+// GET /api/connect/producer/users/:id/logins — a team member's sign-ins, newest first. The producer
+// admin sees anyone's; staff see only their own.
+const userLogins = async (req, res) => {
+  try {
+    const user = await teamMember(req);
+    if (req.user.producerRole !== 'admin' && user.id !== req.user.id) {
+      return res.status(403).json({ message: 'Only your admin can see other users’ logins.' });
+    }
+    const [summary] = await withLoginStats([user], producerUserJson);
+    return res.status(200).json({ user: summary, logins: await loginHistory(user.id) });
+  } catch (err) {
+    return fail(res, err, 'Could not load the login history.');
   }
 };
 
@@ -642,6 +658,7 @@ module.exports = {
   overview,
   uploadFile,
   listUsers,
+  userLogins,
   createUser,
   updateUser,
   blockUser,

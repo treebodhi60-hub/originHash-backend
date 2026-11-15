@@ -185,6 +185,20 @@ const ChatMessage = sequelize.define(
   opts('brand_chat_messages')
 );
 
+// One successful sign-in (see ./logins).
+const UserLogin = sequelize.define(
+  'UserLogin',
+  {
+    id: pk,
+    userId: fk(false),
+    producerId: fk(),
+    method: { type: DataTypes.ENUM('password', 'otp'), allowNull: false },
+    ip: { type: DataTypes.STRING(64), allowNull: true },
+    userAgent: { type: DataTypes.STRING(255), allowNull: true },
+  },
+  opts('user_logins')
+);
+
 // Associations. `constraints: false` everywhere: the foreign keys themselves live in the migrations.
 const rel = { constraints: false };
 Producer.hasMany(User, { foreignKey: 'producerId', as: 'users', ...rel });
@@ -237,4 +251,5 @@ module.exports = {
   ChainWarranty,
   ChatThread,
   ChatMessage,
+  UserLogin,
 };

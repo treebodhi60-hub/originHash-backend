@@ -3,6 +3,7 @@ const bcrypt = require('bcryptjs');
 const { Op } = require('sequelize');
 const { User, Otp } = require('../models');
 const Producer = require('../connect/producerModel');
+const { recordLogin } = require('../connect/logins');
 const { generateOtp } = require('../utils/otp');
 const { sendOtp222, verifyOtp222 } = require("../services/twoFactorService");
 
@@ -254,6 +255,7 @@ const verifyOtp = async (req, res) => {
     }
 
     const token = signToken(user);
+    await recordLogin(user, req, "otp");
 
     return res.status(200).json({
       message: "Logged in successfully.",
@@ -303,6 +305,7 @@ const passwordLogin = (who) => async (req, res) => {
     }
 
     const token = signToken(user);
+    await recordLogin(user, req, "password");
 
     return res.status(200).json({
       message: "Logged in successfully.",

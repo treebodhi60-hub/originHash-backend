@@ -3,6 +3,7 @@ const { Op, fn, col } = require('sequelize');
 const { sequelize, User, Producer, ProducerProduct, ChainBatch, ChainBatchRequest, ChainUnit } = require('../models');
 const { recordProfileVersion } = require('../../utils/profileHistory');
 const { allotBatch, batchTotals, sendBatchFile, sendUnitQr } = require('../batches');
+const { withLoginStats, loginHistory } = require('../logins');
 const { isStoredRef, storeFile, fileJson } = require('../files');
 const { producerJson, producerUserJson, accountJson, batchJson, requestJson, unitJson, productJson } = require('../serialize');
 const { MOBILE_REGEX, EMAIL_REGEX, USERNAME_REGEX, text, opt, bool, validDate, discount, fail, httpError } = require('../util');
@@ -200,13 +201,25 @@ const getProducer = async (req, res) => {
     const totals = await batchTotals(batches.map((b) => b.id));
     return res.status(200).json({
       producer: producerJson(producer, req, { totals: (await producerTotals([producer.id])).get(producer.id) }),
-      users: users.map(producerUserJson),
+      users: await withLoginStats(users, producerUserJson),
       products: products.map((p) => productJson(p, req)),
       batches: batches.map((b) => batchJson(b, totals.get(b.id))),
       requests: requests.map(requestJson),
     });
   } catch (err) {
     return fail(res, err, 'Could not load the producer.');
+  }
+};
+
+// GET /api/connect/admin/producers/:id/users/:userId/logins — a producer user's sign-ins.
+const producerUserLogins = async (req, res) => {
+  try {
+    const user = await User.findOne({ where: { id: req.params.userId, producerId: req.params.id } });
+    if (!user) return res.status(404).json({ message: 'User not found.' });
+    const [summary] = await withLoginStats([user], producerUserJson);
+    return res.status(200).json({ user: summary, logins: await loginHistory(user.id) });
+  } catch (err) {
+    return fail(res, err, 'Could not load the login history.');
   }
 };
 
@@ -569,6 +582,7 @@ module.exports = {
   listProducers,
   createProducer,
   getProducer,
+  producerUserLogins,
   updateProducer,
   blockProducer,
   updateProducerAdmin,
