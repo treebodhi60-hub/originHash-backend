@@ -120,6 +120,7 @@ const publicUser = (user) => ({
   producerRole: user.producerRole ?? null,
   canChat: Boolean(user.producerRole === 'admin' || user.canChat),
   partnerRole: user.partnerRole ?? null,
+  partnerProducerId: user.partnerProducerId ?? null,
   businessName: user.businessName ?? null,
   city: user.city ?? null,
 });

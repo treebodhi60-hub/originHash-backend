@@ -47,6 +47,8 @@ const accountJson = (u) =>
     city: u.city,
     address: u.address,
     userType: u.userType,
+    producerId: u.partnerProducerId ?? null,
+    producerName: u.partnerProducer ? u.partnerProducer.name : null,
     isBlocked: u.isBlocked,
     createdAt: u.createdAt,
   };

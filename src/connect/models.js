@@ -205,6 +205,26 @@ const UserLogin = sequelize.define(
   opts('user_logins')
 );
 
+// A user's request to become a retailer, decided by the OriginHash superadmin.
+const PartnerApplication = sequelize.define(
+  'PartnerApplication',
+  {
+    id: pk,
+    userId: fk(false),
+    role: { type: DataTypes.ENUM('retailer'), allowNull: false, defaultValue: 'retailer' },
+    producerId: fk(),
+    businessName: { type: DataTypes.STRING(160), allowNull: false },
+    city: { type: DataTypes.STRING(120), allowNull: true },
+    address: { type: DataTypes.STRING(255), allowNull: true },
+    note: { type: DataTypes.STRING(500), allowNull: true },
+    status: { type: DataTypes.ENUM('pending', 'approved', 'rejected'), allowNull: false, defaultValue: 'pending' },
+    decidedBy: fk(),
+    decidedAt: { type: DataTypes.DATE, allowNull: true },
+    decisionNote: { type: DataTypes.STRING(500), allowNull: true },
+  },
+  opts('partner_applications')
+);
+
 // Associations. `constraints: false` everywhere: the foreign keys themselves live in the migrations.
 const rel = { constraints: false };
 Producer.hasMany(User, { foreignKey: 'producerId', as: 'users', ...rel });
@@ -244,6 +264,11 @@ ChatThread.belongsTo(User, { foreignKey: 'assignedUserId', as: 'assignee', ...re
 ChatThread.hasMany(ChatMessage, { foreignKey: 'threadId', as: 'messages', ...rel });
 ChatMessage.belongsTo(User, { foreignKey: 'senderUserId', as: 'sender', ...rel });
 
+PartnerApplication.belongsTo(User, { foreignKey: 'userId', as: 'user', ...rel });
+PartnerApplication.belongsTo(Producer, { foreignKey: 'producerId', as: 'producer', ...rel });
+PartnerApplication.belongsTo(User, { foreignKey: 'decidedBy', as: 'decider', ...rel });
+User.belongsTo(Producer, { foreignKey: 'partnerProducerId', as: 'partnerProducer', ...rel });
+
 module.exports = {
   sequelize,
   User,
@@ -258,4 +283,5 @@ module.exports = {
   ChatThread,
   ChatMessage,
   UserLogin,
+  PartnerApplication,
 };

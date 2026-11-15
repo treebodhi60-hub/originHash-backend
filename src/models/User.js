@@ -91,6 +91,8 @@ const User = sequelize.define(
     partnerRole: { type: DataTypes.ENUM('distributor', 'retailer'), allowNull: true, field: 'partner_role' },
     businessName: { type: DataTypes.STRING(160), allowNull: true, field: 'business_name' },
     city: { type: DataTypes.STRING(120), allowNull: true, field: 'city' },
+    // A retailer's producer: the only one whose products they may mark sold.
+    partnerProducerId: { type: DataTypes.INTEGER.UNSIGNED, allowNull: true, field: 'partner_producer_id' },
   },
   {
     tableName: 'users',

@@ -1,9 +1,10 @@
 const bcrypt = require('bcryptjs');
 const { Op, fn, col } = require('sequelize');
-const { sequelize, User, Producer, ProducerProduct, ChainBatch, ChainBatchRequest, ChainUnit } = require('../models');
+const { sequelize, User, Producer, ProducerProduct, ChainBatch, ChainBatchRequest, ChainUnit, PartnerApplication } = require('../models');
 const { recordProfileVersion } = require('../../utils/profileHistory');
 const { allotBatch, batchTotals, sendBatchFile, sendUnitQr, readPrintLayout } = require('../batches');
 const { withLoginStats, loginHistory } = require('../logins');
+const { queryHistory } = require('../history');
 const { isStoredRef, storeFile, fileJson } = require('../files');
 const { producerJson, producerUserJson, accountJson, batchJson, requestJson, unitJson, productJson } = require('../serialize');
 const { MOBILE_REGEX, EMAIL_REGEX, USERNAME_REGEX, text, opt, bool, validDate, discount, fail, httpError } = require('../util');
@@ -41,7 +42,8 @@ const overview = async (req, res) => {
       byRole[a.partnerRole] = Number(a.n);
     });
     byRole.consumer = await User.count({ where: CONSUMER_WHERE });
-    return res.status(200).json({ producers, accounts: byRole, batches, units, sold, pendingRequests: pending });
+    const pendingRetailers = await PartnerApplication.count({ where: { status: 'pending' } });
+    return res.status(200).json({ producers, accounts: byRole, batches, units, sold, pendingRequests: pending, pendingRetailers });
   } catch (err) {
     return fail(res, err, 'Could not load the overview.');
   }
@@ -298,7 +300,7 @@ const listAccounts = async (req, res) => {
         ? { [Op.or]: ['mobile', 'name', 'businessName', 'city', 'email'].map((f) => ({ [f]: { [Op.like]: `%${search}%` } })) }
         : {}),
     };
-    const accounts = await User.findAll({ where, order: [['createdAt', 'DESC']], limit: 1000 });
+    const accounts = await User.findAll({ where, include: accountInclude, order: [['createdAt', 'DESC']], limit: 1000 });
     return res.status(200).json({ accounts: accounts.map(accountJson) });
   } catch (err) {
     return fail(res, err, 'Could not load accounts.');
@@ -317,6 +319,16 @@ const readAccountFields = (body, role) => {
 
 const roleColumns = (role) => (role === 'consumer' ? { partnerRole: null, userType: 'consumer' } : { partnerRole: role, userType: role });
 
+// A retailer's producer (required: they may mark only that producer's products sold). Others: none.
+const readPartnerProducer = async (body, role) => {
+  if (role !== 'retailer') return { partnerProducerId: null };
+  const producerId = Number(body.producerId) || null;
+  if (!producerId) throw httpError(400, 'Choose the producer this retailer sells for.', 'producerId');
+  if (!(await Producer.findByPk(producerId, { attributes: ['id'] }))) throw httpError(400, 'Choose one of the producers.', 'producerId');
+  return { partnerProducerId: producerId };
+};
+const accountInclude = [{ model: Producer, as: 'partnerProducer', attributes: ['id', 'name'] }];
+
 // POST /api/connect/admin/accounts { role, mobile, name, businessName?, email?, city?, address? }
 // A mobile that already has an app account (e.g. a customer) is made a distributor / retailer.
 const createAccount = async (req, res) => {
@@ -326,7 +338,7 @@ const createAccount = async (req, res) => {
     if (!ROLES.includes(role)) throw httpError(400, 'Choose distributor, retailer or consumer.', 'role');
     const mobile = text(body.mobile, 15);
     if (!MOBILE_REGEX.test(mobile)) throw httpError(400, 'Enter a valid 10-digit mobile number.', 'mobile');
-    const fields = readAccountFields(body, role);
+    const fields = { ...readAccountFields(body, role), ...(await readPartnerProducer(body, role)) };
 
     const { user, upgraded } = await sequelize.transaction(async (transaction) => {
       const existing = await User.findOne({ where: { mobile }, transaction, lock: transaction.LOCK.UPDATE });
@@ -349,6 +361,7 @@ const createAccount = async (req, res) => {
       return { user: created, upgraded: false };
     });
     const label = user.businessName || user.name;
+    await user.reload({ include: accountInclude });
     return res.status(201).json({
       message: upgraded ? `The existing account of ${label} is now a ${role}.` : `${label} added as a ${role}.`,
       account: accountJson(user),
@@ -370,7 +383,7 @@ const updateAccount = async (req, res) => {
     const account = await ownAccount(req.params.id);
     const body = req.body || {};
     const role = ROLES.includes(body.role) ? body.role : account.partnerRole || 'consumer';
-    const changes = { ...readAccountFields(body, role), ...roleColumns(role) };
+    const changes = { ...readAccountFields(body, role), ...roleColumns(role), ...(await readPartnerProducer(body, role)) };
     if (body.mobile !== undefined && body.mobile !== account.mobile) {
       const mobile = text(body.mobile, 15);
       if (!MOBILE_REGEX.test(mobile)) throw httpError(400, 'Enter a valid 10-digit mobile number.', 'mobile');
@@ -383,6 +396,7 @@ const updateAccount = async (req, res) => {
       await account.update(changes, { transaction });
       await recordProfileVersion(account, { source: 'admin', changedBy: req.user.id, transaction });
     });
+    await account.reload({ include: accountInclude });
     return res.status(200).json({ message: 'Saved.', account: accountJson(account) });
   } catch (err) {
     return fail(res, err, 'Could not save the account.');
@@ -563,6 +577,17 @@ const downloadBatch = async (req, res) => {
   }
 };
 
+// GET /api/connect/admin/history?producerId=&filter=&q=&page=&pageSize= — the supply-chain history of
+// every producer's QR codes (or one producer's).
+const history = async (req, res) => {
+  try {
+    const producerId = Number(req.query.producerId) || null;
+    return res.status(200).json(await queryHistory({ producerId, me: req.user.id, query: req.query }));
+  } catch (err) {
+    return fail(res, err, 'Could not load the history.');
+  }
+};
+
 // PUT /api/connect/admin/batches/:id/print-layout { pageSize, perPage, orientation } — how the batch's
 // QR PDF is laid out, for the superadmin and the producer alike.
 const updatePrintLayout = async (req, res) => {
@@ -598,6 +623,7 @@ const unitQr = async (req, res) => {
 
 module.exports = {
   unitQr,
+  history,
   updatePrintLayout,
   overview,
   uploadFile,

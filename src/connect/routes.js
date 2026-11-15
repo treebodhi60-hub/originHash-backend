@@ -7,6 +7,7 @@ const admin = require('./controllers/adminController');
 const producer = require('./controllers/producerController');
 const qr = require('./controllers/qrController');
 const chat = require('./controllers/chatController');
+const applications = require('./controllers/applicationController');
 
 // Supply-chain module, mounted at /api/connect. Everyone signs in with their normal app account
 // (the app's own token); ./access works out what they are in the supply chain.
@@ -19,6 +20,10 @@ const maybeSignedIn = [optionalAuth, loadChain];
 const hq = express.Router();
 hq.use(signedIn, allow('admin'));
 hq.get('/overview', admin.overview);
+hq.get('/history', admin.history);
+hq.get('/retailer-applications', applications.listApplications);
+hq.post('/retailer-applications/:id/approve', applications.approve);
+hq.post('/retailer-applications/:id/reject', applications.reject);
 hq.post('/uploads', singleFile, admin.uploadFile);
 hq.get('/producers', admin.listProducers);
 hq.post('/producers', admin.createProducer);
@@ -85,6 +90,8 @@ router.use('/producer', pr);
 const me = express.Router();
 me.use(signedIn);
 me.get('/history', qr.myHistory);
+me.get('/retailer-application', applications.myApplication);
+me.post('/retailer-application', applications.apply);
 me.post('/uploads', allow('retailer'), singleFile, async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ message: 'Choose a file to upload.' });
