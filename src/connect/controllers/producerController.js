@@ -561,21 +561,6 @@ const getBatch = async (req, res) => {
   }
 };
 
-// PUT /api/connect/producer/batches/:id { productId } — which product the batch's QR codes show.
-const updateBatch = async (req, res) => {
-  try {
-    const batch = await ownBatch(req);
-    const productId = req.body?.productId ? Number(req.body.productId) : null;
-    if (productId) await ownProduct(req, productId);
-    await batch.update({ productId });
-    await batch.reload({ include: [{ model: ProducerProduct, as: 'product', attributes: ['id', 'name'] }] });
-    const totals = await batchTotals([batch.id]);
-    return res.status(200).json({ message: 'Batch saved.', batch: batchJson(batch, totals.get(batch.id)) });
-  } catch (err) {
-    return fail(res, err, 'Could not save the batch.');
-  }
-};
-
 // GET /api/connect/producer/batches/:id/file/:format (pdf|csv)
 const downloadBatch = async (req, res) => {
   try {
@@ -732,7 +717,6 @@ module.exports = {
   createRequest,
   listBatches,
   getBatch,
-  updateBatch,
   downloadBatch,
   lookupUnit,
   getUnit,

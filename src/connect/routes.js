@@ -68,7 +68,6 @@ pr.get('/batch-requests', producer.listRequests);
 pr.post('/batch-requests', producer.createRequest);
 pr.get('/batches', producer.listBatches);
 pr.get('/batches/:id', producer.getBatch);
-pr.put('/batches/:id', producer.updateBatch);
 pr.get('/batches/:id/file/:format(pdf|csv)', producer.downloadBatch);
 pr.get('/units/lookup', producer.lookupUnit);
 pr.get('/units/:id', producer.getUnit);

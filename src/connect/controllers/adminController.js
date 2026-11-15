@@ -433,8 +433,10 @@ const readBatchFields = async (body, producerId, fallback = {}) => {
   if (maxDiscountPercent === undefined) throw httpError(400, 'Max discount must be between 0 and 100%.', 'maxDiscountPercent');
   const expiryDate = pick('expiryDate');
   if (!validDate(expiryDate)) throw httpError(400, 'Choose the expiry date.', 'expiryDate');
-  const productId = pick('productId') ? Number(pick('productId')) : null;
-  if (productId && !(await ProducerProduct.findOne({ where: { id: productId, producerId }, attributes: ['id'] }))) {
+  // The product is fixed when the batch is allotted (producers can't change it afterwards).
+  const productId = Number(pick('productId')) || null;
+  if (!productId) throw httpError(400, 'Choose the product for this batch.', 'productId');
+  if (!(await ProducerProduct.findOne({ where: { id: productId, producerId }, attributes: ['id'] }))) {
     throw httpError(400, "That product doesn't belong to this producer.", 'productId');
   }
   return {
