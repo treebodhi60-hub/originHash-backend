@@ -450,20 +450,37 @@ const listRequests = async (req, res) => {
   }
 };
 
-// POST /api/connect/producer/batch-requests { quantity, maxDiscountPercent, expiryDate, productId?, batchNo?, note? }
+// The product's discount that applies today (Discounts tab): active and not expired.
+const currentOfferOf = (req, productId) =>
+  ProducerOffer.findOne({
+    where: {
+      producerId: producerIdOf(req),
+      productId,
+      isActive: true,
+      [Op.or]: [{ validTill: null }, { validTill: { [Op.gte]: todayIST() } }],
+    },
+    order: [['updatedAt', 'DESC']],
+  });
+
+// POST /api/connect/producer/batch-requests { productId, quantity, expiryDate, batchNo?, note? }
+// The max discount is always the product's current discount (set only in the Discounts tab).
 // QR codes are free for now; the OriginHash superadmin allots the batch.
 const createRequest = async (req, res) => {
   try {
     const body = req.body || {};
+    const productId = Number(body.productId) || null;
+    if (!productId) throw httpError(400, 'Choose the product.', 'productId');
+    const product = await ownProduct(req, productId).catch(() => {
+      throw httpError(400, 'Choose one of your products.', 'productId');
+    });
+    if (!product.isActive) throw httpError(400, `${product.name} is inactive. Activate it in Products first.`, 'productId');
     const quantity = Number(body.quantity);
     if (!Number.isInteger(quantity) || quantity < 1 || quantity > MAX_QUANTITY) {
       throw httpError(400, `Request between 1 and ${MAX_QUANTITY.toLocaleString('en-IN')} units.`, 'quantity');
     }
-    const maxDiscountPercent = discount(body.maxDiscountPercent);
-    if (maxDiscountPercent === undefined) throw httpError(400, 'Max discount must be between 0 and 100%.', 'maxDiscountPercent');
+    const offer = await currentOfferOf(req, productId);
+    const maxDiscountPercent = offer ? discount(offer.discountPercent) || null : null;
     if (!validDate(body.expiryDate)) throw httpError(400, 'Choose the expiry date.', 'expiryDate');
-    const productId = body.productId ? Number(body.productId) : null;
-    if (productId) await ownProduct(req, productId);
     const batchNo = opt(body.batchNo, 80);
     if (batchNo && (await ChainBatch.findOne({ where: { producerId: producerIdOf(req), batchNo }, attributes: ['id'] }))) {
       throw httpError(409, 'You already have a batch with this number.', 'batchNo');
