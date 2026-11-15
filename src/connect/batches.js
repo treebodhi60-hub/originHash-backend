@@ -1,7 +1,7 @@
 const { fn, col, literal } = require('sequelize');
 const { sequelize, ChainBatch, ChainUnit } = require('./models');
 const { newToken, newCoupon, serialOf, retailerQrUrl, consumerQrUrl, httpError } = require('./util');
-const { gridFor } = require('../utils/stickerLayout');
+const { pairGridFor, pairSlot, pairBlock, PAGE_SIZE_NAMES, PAIR_ORIENTATIONS, MAX_BULK_PER_PAGE } = require('../utils/stickerLayout');
 const QRCode = require('qrcode');
 const { labelQrBuffer, streamQrLabelPdf } = require('../utils/stickerPdf');
 
@@ -81,23 +81,39 @@ const batchTotals = async (batchIds) => {
 
 const safeName = (s) => String(s).replace(/[^a-zA-Z0-9-]+/g, '_');
 
-// Labels in pairs (retailer QR, then its consumer QR), with an even number of columns so each pair
-// sits side by side on the sheet.
-const pairLayout = () => {
-  for (const perPage of [12, 10, 8, 6, 4]) {
-    const layout = gridFor('A4', 'bulk', perPage);
-    if (layout.cols % 2 === 0) return layout;
+// The batch's print layout (set by the OriginHash superadmin): paper, QR labels per page (even, so
+// pairs never split) and orientation. Default A4, 40 per page, horizontal.
+const PRINT_DEFAULTS = { pageSize: 'A4', perPage: 40, orientation: 'horizontal' };
+const layoutOf = (batch) => ({
+  pageSize: PAGE_SIZE_NAMES.includes(batch.printPageSize) ? batch.printPageSize : PRINT_DEFAULTS.pageSize,
+  perPage: batch.printPerPage || PRINT_DEFAULTS.perPage,
+  orientation: PAIR_ORIENTATIONS.includes(batch.printOrientation) ? batch.printOrientation : PRINT_DEFAULTS.orientation,
+});
+
+// { pageSize, perPage, orientation } from a request body, checked; resolves to the batch columns.
+const readPrintLayout = (body = {}) => {
+  const pageSize = body.pageSize || PRINT_DEFAULTS.pageSize;
+  if (!PAGE_SIZE_NAMES.includes(pageSize)) throw httpError(400, 'Choose A4 or A3.', 'pageSize');
+  const perPage = Number(body.perPage ?? PRINT_DEFAULTS.perPage);
+  if (!Number.isInteger(perPage) || perPage < 2 || perPage > MAX_BULK_PER_PAGE || perPage % 2) {
+    throw httpError(400, `QR codes per page: an even number from 2 to ${MAX_BULK_PER_PAGE}.`, 'perPage');
   }
-  return gridFor('A4', 'bulk', 10);
+  const orientation = body.orientation || PRINT_DEFAULTS.orientation;
+  if (!PAIR_ORIENTATIONS.includes(orientation)) throw httpError(400, 'Choose horizontal or vertical.', 'orientation');
+  return { printPageSize: pageSize, printPerPage: perPage, printOrientation: orientation };
 };
 
-const streamBatchPdf = async (res, batch, producerName, units) =>
-  streamQrLabelPdf(res, {
-    layout: pairLayout(),
+const streamBatchPdf = async (res, batch, producerName, units) => {
+  const { pageSize, perPage, orientation } = layoutOf(batch);
+  const layout = pairGridFor(pageSize, perPage, orientation);
+  return streamQrLabelPdf(res, {
+    layout,
     count: units.length * 2,
     title: 'Retailer + consumer QR pairs',
     subtitle: `${producerName} · Batch ${batch.batchNo} · ${units.length} units`,
     fileName: `${safeName(batch.batchNo)}-qr-pairs.pdf`,
+    slotOf: (n) => pairSlot(layout, n),
+    cutSlots: (k) => pairBlock(layout, k),
     labelAt: async (i, doc) => {
       const unit = units[Math.floor(i / 2)];
       const retailer = i % 2 === 0;
@@ -109,6 +125,7 @@ const streamBatchPdf = async (res, batch, producerName, units) =>
       };
     },
   });
+};
 
 const csvCell = (v) => {
   const s = v === null || v === undefined ? '' : String(v);
@@ -151,9 +168,12 @@ const unitQrJson = async (unit) => {
 const sendUnitQr = async (req, res, unit, producerName) => {
   if (req.params.format === 'pdf') {
     const batch = unit.batch;
+    const layout = pairGridFor('A4', 2, layoutOf(batch).orientation);
     return streamQrLabelPdf(res, {
-      layout: gridFor('A4', 'bulk', 2),
+      layout,
       count: 2,
+      slotOf: (n) => pairSlot(layout, n),
+      cutSlots: (k) => pairBlock(layout, k),
       title: 'Retailer + consumer QR pair',
       subtitle: `${producerName} · Batch ${batch.batchNo} · ${serialOf(unit.id)}`,
       fileName: `${serialOf(unit.id)}-qr-pair.pdf`,
@@ -181,4 +201,4 @@ const sendBatchFile = async (req, res, batch, producerName) => {
   return streamBatchPdf(res, batch, producerName, units);
 };
 
-module.exports = { MAX_QUANTITY, allotBatch, batchTotals, sendBatchFile, sendUnitQr };
+module.exports = { MAX_QUANTITY, PRINT_DEFAULTS, allotBatch, batchTotals, sendBatchFile, sendUnitQr, readPrintLayout };

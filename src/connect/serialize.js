@@ -95,6 +95,7 @@ const batchJson = (b, totals = {}) =>
     maxDiscountPercent: percent(b.maxDiscountPercent),
     expiryDate: b.expiryDate,
     notes: b.notes,
+    printLayout: { pageSize: b.printPageSize || 'A4', perPage: b.printPerPage || 40, orientation: b.printOrientation || 'horizontal' },
     allottedAt: b.createdAt,
     sold: Number(totals.sold || 0),
     consumerScans: Number(totals.consumerScans || 0),

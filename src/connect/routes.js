@@ -38,6 +38,7 @@ hq.get('/batches', admin.listBatches);
 hq.post('/batches', admin.createBatch);
 hq.get('/batches/:id', admin.getBatch);
 hq.get('/batches/:id/file/:format(pdf|csv)', admin.downloadBatch);
+hq.put('/batches/:id/print-layout', admin.updatePrintLayout);
 hq.get('/units/:id/qr/:format(json|pdf)', admin.unitQr);
 router.use('/admin', hq);
 

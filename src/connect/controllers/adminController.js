@@ -2,7 +2,7 @@ const bcrypt = require('bcryptjs');
 const { Op, fn, col } = require('sequelize');
 const { sequelize, User, Producer, ProducerProduct, ChainBatch, ChainBatchRequest, ChainUnit } = require('../models');
 const { recordProfileVersion } = require('../../utils/profileHistory');
-const { allotBatch, batchTotals, sendBatchFile, sendUnitQr } = require('../batches');
+const { allotBatch, batchTotals, sendBatchFile, sendUnitQr, readPrintLayout } = require('../batches');
 const { withLoginStats, loginHistory } = require('../logins');
 const { isStoredRef, storeFile, fileJson } = require('../files');
 const { producerJson, producerUserJson, accountJson, batchJson, requestJson, unitJson, productJson } = require('../serialize');
@@ -563,6 +563,25 @@ const downloadBatch = async (req, res) => {
   }
 };
 
+// PUT /api/connect/admin/batches/:id/print-layout { pageSize, perPage, orientation } — how the batch's
+// QR PDF is laid out, for the superadmin and the producer alike.
+const updatePrintLayout = async (req, res) => {
+  try {
+    const batch = await ChainBatch.findByPk(req.params.id, {
+      include: [
+        { model: Producer, as: 'producer', attributes: ['id', 'name'] },
+        { model: ProducerProduct, as: 'product', attributes: ['id', 'name'] },
+      ],
+    });
+    if (!batch) return res.status(404).json({ message: 'Batch not found.' });
+    await batch.update(readPrintLayout(req.body || {}));
+    const totals = await batchTotals([batch.id]);
+    return res.status(200).json({ message: 'Print layout saved. Downloads use it from now on.', batch: batchJson(batch, totals.get(batch.id)) });
+  } catch (err) {
+    return fail(res, err, 'Could not save the print layout.');
+  }
+};
+
 // GET /api/connect/admin/units/:id/qr/:format (json|pdf) — a unit's retailer + consumer QR codes.
 const unitQr = async (req, res) => {
   try {
@@ -579,6 +598,7 @@ const unitQr = async (req, res) => {
 
 module.exports = {
   unitQr,
+  updatePrintLayout,
   overview,
   uploadFile,
   listProducers,

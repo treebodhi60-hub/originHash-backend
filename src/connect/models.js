@@ -77,6 +77,10 @@ const ChainBatch = sequelize.define(
     expiryDate: { type: DataTypes.DATEONLY, allowNull: false },
     notes: { type: DataTypes.STRING(500), allowNull: true },
     allottedBy: fk(),
+    // The PDF layout (set by the superadmin; see ./batches).
+    printPageSize: { type: DataTypes.ENUM('A4', 'A3'), allowNull: false, defaultValue: 'A4' },
+    printPerPage: { type: DataTypes.TINYINT.UNSIGNED, allowNull: false, defaultValue: 40 },
+    printOrientation: { type: DataTypes.ENUM('horizontal', 'vertical'), allowNull: false, defaultValue: 'horizontal' },
   },
   opts('chain_batches')
 );

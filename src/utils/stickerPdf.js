@@ -7,9 +7,10 @@ const { GAP, PAGE_MARGIN } = require('./stickerLayout');
 // two neighbouring labels, and every label keeps the same thin white border (half the gap). The
 // lines run past the grid (crop-mark style) so a ruler or paper trimmer can line up with them.
 const CUT_OVERSHOOT = 12;
+// `count` can also be { cols, rows }: the block of the grid to draw around.
 const drawCutLines = (doc, layout, count) => {
-  const cols = Math.min(count, layout.cols);
-  const rows = Math.ceil(count / layout.cols);
+  const cols = typeof count === 'object' ? count.cols : Math.min(count, layout.cols);
+  const rows = typeof count === 'object' ? count.rows : Math.ceil(count / layout.cols);
   const half = GAP / 2;
   const xs = Array.from({ length: cols + 1 }, (_, k) => layout.left - half + k * (layout.sw + GAP));
   const ys = Array.from({ length: rows + 1 }, (_, k) => layout.top - half + k * (layout.sh + GAP));
@@ -78,7 +79,9 @@ const drawQrLabel = (doc, { heading, number }, qrImage) => {
 
 // Streams a sheet of `count` QR labels laid out by `layout` (gridFor) to the response, with the page
 // header and cut lines. `labelAt(i, doc)` returns { heading, number, qrImage } for label i.
-const streamQrLabelPdf = async (res, { layout, count, title, subtitle, fileName, labelAt }) => {
+// Optional: `slotOf(n)` — where the page's n-th label goes (row-major slot; default n), and
+// `cutSlots(k)` — what to draw cut lines around for a page of k labels (a count or { cols, rows }).
+const streamQrLabelPdf = async (res, { layout, count, title, subtitle, fileName, labelAt, slotOf = (n) => n, cutSlots = (k) => k }) => {
   const pages = Math.max(1, Math.ceil(count / layout.perPage));
   res.setHeader('Content-Type', 'application/pdf');
   res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
@@ -86,11 +89,12 @@ const streamQrLabelPdf = async (res, { layout, count, title, subtitle, fileName,
   const doc = new PDFDocument({ size: [layout.width, layout.height], margin: 0, autoFirstPage: false });
   doc.pipe(res);
   for (let i = 0; i < count; i += 1) {
-    const slot = i % layout.perPage;
-    if (slot === 0) {
+    const n = i % layout.perPage;
+    const slot = slotOf(n);
+    if (n === 0) {
       const page = i / layout.perPage + 1;
       doc.addPage({ size: [layout.width, layout.height], margin: 0 });
-      drawCutLines(doc, layout, Math.min(layout.perPage, count - i));
+      drawCutLines(doc, layout, cutSlots(Math.min(layout.perPage, count - i)));
       doc
         .fillColor(FOREST)
         .fontSize(9)
