@@ -487,7 +487,10 @@ const allotRequest = async (req, res) => {
       if (request.status !== 'pending') throw httpError(409, `This request was already ${request.status}.`);
       const producer = await Producer.findByPk(request.producerId, { transaction });
       if (producer.isBlocked) throw httpError(409, 'This producer is blocked. Unblock them first.');
-      const fields = await readBatchFields(req.body || {}, request.producerId, request.get({ plain: true }));
+      // The product the producer chose in the request stays: OriginHash can't change it.
+      const body = { ...(req.body || {}) };
+      if (request.productId) delete body.productId;
+      const fields = await readBatchFields(body, request.producerId, request.get({ plain: true }));
       const made = await allotBatch({ ...fields, producerId: request.producerId, allottedBy: req.user.id }, transaction);
       await request.update(
         { status: 'allotted', decidedBy: req.user.id, decidedAt: new Date(), decisionNote: opt(req.body?.decisionNote, 500), batchId: made.id },
