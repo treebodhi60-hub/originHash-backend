@@ -84,6 +84,10 @@ const ChainBatch = sequelize.define(
     printOrientation: { type: DataTypes.ENUM('horizontal', 'vertical'), allowNull: false, defaultValue: 'horizontal' },
     // Who may press Sold: 'all' retailers (the producer's own + general) or only the 'producer''s.
     soldAccess: { type: DataTypes.ENUM('all', 'producer'), allowNull: false, defaultValue: 'all' },
+    // Tracking: record distributor and retailer scans of the retailer QR (sales always are).
+    trackingEnabled: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: true },
+    // Chat with brand: consumers can message the producer from this batch's consumer QR.
+    chatEnabled: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: true },
   },
   opts('chain_batches')
 );

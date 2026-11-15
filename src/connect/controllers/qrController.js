@@ -19,7 +19,7 @@ const { cleanToken, coordinate, serialOf, percent, todayIST, fail, httpError } =
 
 // What the two QR codes of a unit open.
 //   Retailer QR (/rq/:token): for the trade. Producers, distributors and retailers scan it (recorded
-//     when the producer has Tracking on). Sold — once, unlocking the consumer QR — is pressed by
+//     when the batch has Tracking on). Sold — once, unlocking the consumer QR — is pressed by
 //     the unit's own producer (admin or staff), a retailer associated with that producer, a general
 //     retailer when the batch allows all retailers, or the OriginHash superadmin. Other producers
 //     and other producers' retailers get distributor-level access: they scan it, nothing more.
@@ -131,14 +131,14 @@ const retailerView = async (req, unit, scan) => {
     soldAccess: batch.soldAccess || 'all',
     canAddWarranty,
     isOwnProducer: ownsUnit(req, unit),
-    trackingEnabled: batch.producer.trackingEnabled,
+    trackingEnabled: batch.trackingEnabled !== false,
     scan: scan ? { token: scan.token, at: scan.createdAt, recorded: true } : null,
     warranties: warranties.map((w) => warrantyJson(w, req)),
   };
 };
 
 // POST /api/connect/qr/r/:token/open — opening the retailer QR's page. Records the scan for the
-// trade (when the producer has Tracking on) and says what the viewer may do.
+// trade (when the batch has Tracking on) and says what the viewer may do.
 const openRetailerQr = async (req, res) => {
   try {
     const unit = await findUnit('retailerToken', req.params.token);
@@ -156,7 +156,7 @@ const openRetailerQr = async (req, res) => {
     }
     // Another producer's QR: scanned like a distributor would (recorded, no Sold, no warranty).
     let scan = null;
-    if (unit.batch.producer.trackingEnabled) {
+    if (unit.batch.trackingEnabled !== false) {
       scan = await ChainScan.create({ unitId: unit.id, qrType: 'retailer', action: 'scan', token: crypto.randomUUID(), ...scanColumns(req) });
       await unit.increment('tradeScanCount', { silent: true });
     }
@@ -327,7 +327,7 @@ const openConsumerQr = async (req, res) => {
     const extra = {
       soldAt: unit.soldAt,
       purchasedFrom: sellerJson(unit),
-      features: { chat: producer.chatEnabled },
+      features: { chat: batch.chatEnabled !== false && !producer.isBlocked },
       discount,
       offers: offers.map((o) => ({
         id: o.id,

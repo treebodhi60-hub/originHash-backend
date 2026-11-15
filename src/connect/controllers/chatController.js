@@ -6,8 +6,9 @@ const { fileJson, isStoredRef, storeFile } = require('../files');
 // "Chat with brand": a customer writes to a producer about a product they scanned; the producer's
 // admin and the staff allowed to chat answer (staff see conversations assigned to them or to nobody).
 // Customers are consumers — and retailers and distributors, who buy products too. Messages carry
-// text, a photo, or both. The producer can switch chat off; customers then can't start or continue
-// conversations.
+// text, a photo, or both. Chat is switched on or off per QR batch (by the producer admin or the
+// superadmin): a conversation follows its product's batch, so with chat off customers can't start or
+// continue it from that batch.
 
 const BODY_MAX = 2000;
 
@@ -20,9 +21,14 @@ const messageJson = (m, req) => ({
   sender: m.senderType === 'producer' ? (m.sender ? m.sender.name || m.sender.username : 'Brand') : null,
 });
 
+// Whether customers may write in a conversation: its product's batch has chat on, and the producer
+// isn't blocked.
+const chatOpen = (batch, producer) => !(producer && producer.isBlocked) && (!batch || batch.chatEnabled !== false);
+
 const threadJson = (t, side) => ({
   id: t.id,
-  producer: t.producer ? { id: t.producer.id, name: t.producer.name, chatEnabled: t.producer.chatEnabled } : undefined,
+  producer: t.producer ? { id: t.producer.id, name: t.producer.name, chatEnabled: chatOpen(t.unit?.batch, t.producer) } : undefined,
+  chatEnabled: chatOpen(t.unit?.batch, t.producer),
   consumer: t.consumer
     ? {
         id: t.consumer.id,
@@ -32,7 +38,7 @@ const threadJson = (t, side) => ({
         role: t.consumer.partnerRole || 'consumer',
       }
     : undefined,
-  unit: t.unit ? { id: t.unit.id, serial: serialOf(t.unit.id), productName: t.unit.batch?.product?.name || null } : null,
+  unit: t.unit ? { id: t.unit.id, serial: serialOf(t.unit.id), productName: t.unit.batch?.product?.name || null, batchNo: t.unit.batch?.batchNo || null } : null,
   assignee: t.assignee ? { id: t.assignee.id, name: t.assignee.name || t.assignee.username } : null,
   lastMessageAt: t.lastMessageAt,
   lastMessagePreview: t.lastMessagePreview,
@@ -43,7 +49,7 @@ const unitInclude = {
   model: ChainUnit,
   as: 'unit',
   attributes: ['id', 'batchId'],
-  include: [{ model: ChainBatch, as: 'batch', attributes: ['id', 'productId'], include: [{ model: ProducerProduct, as: 'product', attributes: ['id', 'name'] }] }],
+  include: [{ model: ChainBatch, as: 'batch', attributes: ['id', 'productId', 'batchNo', 'chatEnabled'], include: [{ model: ProducerProduct, as: 'product', attributes: ['id', 'name'] }] }],
 };
 
 const messagesOf = async (threadId, after) =>
@@ -120,7 +126,7 @@ const producerThreads = async (req, res) => {
       order: [['lastMessageAt', 'DESC']],
       limit: 300,
     });
-    return res.status(200).json({ threads: threads.map((t) => threadJson(t, 'producer')), chatEnabled: req.producer.chatEnabled });
+    return res.status(200).json({ threads: threads.map((t) => threadJson(t, 'producer')) });
   } catch (err) {
     return fail(res, err, 'Could not load conversations.');
   }
@@ -184,7 +190,7 @@ const consumerThreads = async (req, res) => {
   try {
     const threads = await ChatThread.findAll({
       where: { consumerId: req.user.id },
-      include: [{ model: Producer, as: 'producer', attributes: ['id', 'name', 'chatEnabled'] }, unitInclude],
+      include: [{ model: Producer, as: 'producer', attributes: ['id', 'name', 'isBlocked'] }, unitInclude],
       order: [['lastMessageAt', 'DESC']],
     });
     return res.status(200).json({ threads: threads.map((t) => threadJson(t, 'consumer')) });
@@ -197,13 +203,13 @@ const consumerThreads = async (req, res) => {
 // (empty until the first message).
 const consumerMessages = async (req, res) => {
   try {
-    const producer = await Producer.findByPk(req.params.producerId, { attributes: ['id', 'name', 'chatEnabled', 'isBlocked'] });
+    const producer = await Producer.findByPk(req.params.producerId, { attributes: ['id', 'name', 'isBlocked'] });
     if (!producer) throw httpError(404, 'Brand not found.');
     const thread = await ChatThread.findOne({ where: { producerId: producer.id, consumerId: req.user.id }, include: [unitInclude] });
     const messages = thread ? await messagesOf(thread.id, Number(req.query.after) || 0) : [];
     if (thread?.unreadForConsumer) await thread.update({ unreadForConsumer: 0 }, { silent: true });
     return res.status(200).json({
-      producer: { id: producer.id, name: producer.name, chatEnabled: producer.chatEnabled && !producer.isBlocked },
+      producer: { id: producer.id, name: producer.name, chatEnabled: chatOpen(thread?.unit?.batch, producer) },
       thread: thread ? threadJson(thread, 'consumer') : null,
       messages: messages.map((m) => messageJson(m, req)),
     });
@@ -220,15 +226,23 @@ const consumerSend = async (req, res) => {
     const account = req.user;
     const producer = await Producer.findByPk(req.params.producerId);
     if (!producer) throw httpError(404, 'Brand not found.');
-    if (!producer.chatEnabled || producer.isBlocked) throw httpError(409, `${producer.name} isn't taking chat messages right now.`);
+    if (producer.isBlocked) throw httpError(409, `${producer.name} isn't taking chat messages right now.`);
     const msg = readMessage(req);
 
-    let unitId = null;
+    // The product written about: the scanned unit (unitToken), else the conversation's. Its batch
+    // must have chat on.
+    let unit = null;
     const token = cleanToken(req.body?.unitToken);
     if (token) {
-      const unit = await ChainUnit.findOne({ where: { consumerToken: token, status: 'sold' }, include: [{ model: ChainBatch, as: 'batch', attributes: ['producerId'] }] });
-      if (unit && unit.batch.producerId === producer.id) unitId = unit.id;
+      unit = await ChainUnit.findOne({ where: { consumerToken: token, status: 'sold' }, include: [{ model: ChainBatch, as: 'batch', attributes: ['producerId', 'chatEnabled'] }] });
+      if (unit && unit.batch.producerId !== producer.id) unit = null;
     }
+    if (!unit) {
+      const existing = await ChatThread.findOne({ where: { producerId: producer.id, consumerId: account.id }, include: [unitInclude] });
+      unit = existing?.unit || null;
+    }
+    if (unit && unit.batch.chatEnabled === false) throw httpError(409, `${producer.name} isn't taking chat messages about this product.`);
+    const unitId = token && unit ? unit.id : null;
 
     const message = await sequelize.transaction(async (transaction) => {
       let thread = await ChatThread.findOne({ where: { producerId: producer.id, consumerId: account.id }, transaction, lock: transaction.LOCK.UPDATE });

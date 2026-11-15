@@ -176,6 +176,31 @@ const setSoldAccess = (scope) => async (req, res) => {
   }
 };
 
+// PUT …/batches/:id/features { trackingEnabled?, chatEnabled? } — the batch's Tracking and Chat with
+// brand switches (producer admin or superadmin).
+const FEATURE_NAMES = { trackingEnabled: 'Tracking', chatEnabled: 'Chat with brand' };
+const setFeatures = (scope) => async (req, res) => {
+  try {
+    const body = req.body || {};
+    const changes = {};
+    for (const key of Object.keys(FEATURE_NAMES)) {
+      if (body[key] === undefined) continue;
+      if (typeof body[key] !== 'boolean') throw httpError(400, `${FEATURE_NAMES[key]}: on or off.`, key);
+      changes[key] = body[key];
+    }
+    if (!Object.keys(changes).length) throw httpError(400, 'Nothing to change.');
+    const where = { id: req.params.id, ...(scope === 'producer' ? { producerId: pidOf(req) } : {}) };
+    const batch = await ChainBatch.findOne({ where, include: batchIncludes });
+    if (!batch) throw httpError(404, 'Batch not found.');
+    await batch.update(changes);
+    const totals = await batchTotals([batch.id]);
+    const said = Object.entries(changes).map(([k, v]) => `${FEATURE_NAMES[k]} ${v ? 'on' : 'off'}`);
+    return res.status(200).json({ message: `${said.join(', ')} for batch ${batch.batchNo}.`, batch: batchJson(batch, totals.get(batch.id)) });
+  } catch (err) {
+    return fail(res, err, 'Could not save the batch settings.');
+  }
+};
+
 module.exports = {
   sheetUpload,
   listMine,
@@ -187,4 +212,6 @@ module.exports = {
   template,
   setProducerSoldAccess: setSoldAccess('producer'),
   setAdminSoldAccess: setSoldAccess('admin'),
+  setProducerFeatures: setFeatures('producer'),
+  setAdminFeatures: setFeatures('admin'),
 };

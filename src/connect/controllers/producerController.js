@@ -42,20 +42,6 @@ const USER_ATTRS = ['id', 'name', 'username', 'mobile', 'businessName', 'city', 
 // GET /api/connect/producer/me
 const me = async (req, res) => res.status(200).json({ user: publicUser(req.user), producer: producerJson(req.producer, req) });
 
-// PUT /api/connect/producer/settings { trackingEnabled?, chatEnabled? } — producer admin only.
-const updateSettings = async (req, res) => {
-  try {
-    const body = req.body || {};
-    const changes = {};
-    if (body.trackingEnabled !== undefined) changes.trackingEnabled = bool(body.trackingEnabled);
-    if (body.chatEnabled !== undefined) changes.chatEnabled = bool(body.chatEnabled);
-    await req.producer.update(changes);
-    return res.status(200).json({ message: 'Settings saved.', producer: producerJson(req.producer, req) });
-  } catch (err) {
-    return fail(res, err, 'Could not save the settings.');
-  }
-};
-
 const UNITS_OF = 'SELECT u.id FROM chain_units u JOIN chain_batches b ON b.id = u.batch_id WHERE b.producer_id = :pid';
 
 // GET /api/connect/producer/overview — the numbers on the producer's dashboard.
@@ -120,7 +106,6 @@ const overview = async (req, res) => {
       topRetailers: retailers.map((r) => ({ id: r.id, name: r.businessName || r.name, city: r.city, sold: Number(r.sold) })),
       topPlaces: places.map((p) => ({ place: p.place, scans: Number(p.n) })),
       recent: recent.map((s) => ({ ...scanJson(s), unitId: s.unitId, serial: serialOf(s.unitId) })),
-      trackingEnabled: req.producer.trackingEnabled,
     });
   } catch (err) {
     return fail(res, err, 'Could not load the dashboard.');
@@ -639,7 +624,7 @@ const getUnit = async (req, res) => {
       couponClaimedBy: claimer ? { name: claimer.name, mobile: claimer.mobile } : null,
       scans: scans.map(scanJson),
       warranties: warranties.map((w) => warrantyJson(w, req)),
-      trackingEnabled: req.producer.trackingEnabled,
+      trackingEnabled: unit.batch.trackingEnabled !== false,
     });
   } catch (err) {
     return fail(res, err, 'Could not load the unit.');
@@ -705,7 +690,6 @@ const changePassword = async (req, res) => {
 module.exports = {
   me,
   changePassword,
-  updateSettings,
   overview,
   uploadFile,
   history,
