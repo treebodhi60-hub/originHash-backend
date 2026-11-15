@@ -268,10 +268,13 @@ const readProductFields = (body, categories) => {
   const nabl = body.nablCertificate;
   const nablRef = nabl ? (typeof nabl === 'string' ? nabl : nabl.ref) : null;
   if (nablRef && !isStoredRef(nablRef)) throw httpError(400, 'Upload the NABL certificate again.', 'nablCertificate');
-  const certifications = (Array.isArray(body.certifications) ? body.certifications : [])
-    .filter((c) => c && isStoredRef(c.ref))
-    .slice(0, 12)
-    .map((c) => ({ title: text(c.title, 120) || 'Certificate', ref: c.ref, name: opt(c.name, 200) }));
+  // Titled documents: [{ title, ref, name }], only files uploaded through /uploads.
+  const docs = (list, fallbackTitle) =>
+    (Array.isArray(list) ? list : [])
+      .filter((c) => c && isStoredRef(c.ref))
+      .slice(0, 12)
+      .map((c) => ({ title: text(c.title, 120) || fallbackTitle, ref: c.ref, name: opt(c.name, 200) }));
+  const certifications = docs(body.certifications, 'Certificate');
   return {
     name,
     category,
@@ -282,6 +285,7 @@ const readProductFields = (body, categories) => {
     certifications,
     images: refsFrom(body.images, 10),
     warrantyTerms: opt(body.warrantyTerms, 3000),
+    warrantyDocs: docs(body.warrantyDocs, 'Warranty document'),
     isActive: body.isActive === undefined ? true : bool(body.isActive),
   };
 };

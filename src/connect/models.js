@@ -41,6 +41,7 @@ const ProducerProduct = sequelize.define(
     certifications: json('certifications'),
     images: json('images'),
     warrantyTerms: { type: DataTypes.TEXT, allowNull: true },
+    warrantyDocs: json('warrantyDocs'),
     isActive: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: true },
     createdBy: fk(),
   },

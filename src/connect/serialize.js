@@ -63,6 +63,7 @@ const productJson = (p, req) =>
     certifications: (p.certifications || []).map((c) => ({ title: c.title || '', ...fileJson(c.ref, req, c.name) })),
     images: (p.images || []).map((ref) => fileJson(ref, req)),
     warrantyTerms: p.warrantyTerms,
+    warrantyDocs: (p.warrantyDocs || []).map((d) => ({ title: d.title || '', ...fileJson(d.ref, req, d.name) })),
     isActive: p.isActive,
     createdAt: p.createdAt,
     updatedAt: p.updatedAt,
