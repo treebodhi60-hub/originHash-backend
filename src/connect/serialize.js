@@ -76,6 +76,7 @@ const offerJson = (o) =>
     productName: o.product ? o.product.name : null,
     title: o.title,
     couponCode: o.couponCode,
+    discountPercent: percent(o.discountPercent),
     details: o.details,
     validTill: o.validTill,
     isActive: o.isActive,

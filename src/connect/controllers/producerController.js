@@ -27,7 +27,7 @@ const {
   scanJson,
   warrantyJson,
 } = require('../serialize');
-const { MOBILE_REGEX, EMAIL_REGEX, USERNAME_REGEX, text, opt, bool, validDate, discount, unitIdFromSerial, serialOf, fail, httpError } = require('../util');
+const { MOBILE_REGEX, EMAIL_REGEX, USERNAME_REGEX, text, opt, bool, validDate, todayIST, discount, unitIdFromSerial, serialOf, fail, httpError } = require('../util');
 
 // A producer's side of the supply-chain module. Every query is limited to the signed-in user's own
 // producer. The producer admin also manages the team and the Tracking / Chat switches.
@@ -342,22 +342,42 @@ const updateProduct = async (req, res) => {
 
 // ---------- Discounts / loyalty offers ----------
 
-const readOfferFields = async (req) => {
+// A product's discount: { productId, couponCode, discountPercent, validTill }. One per product; the
+// title is made from the percentage and product. `existing` is the offer being edited.
+const readOfferFields = async (req, existing = null) => {
   const body = req.body || {};
-  const title = text(body.title, 160);
-  if (!title) throw httpError(400, 'Enter a title for the offer.', 'title');
+  const productId = Number(body.productId) || null;
+  if (!productId) throw httpError(400, 'Choose the product.', 'productId');
+  const product = await ownProduct(req, productId).catch(() => {
+    throw httpError(400, 'Choose one of your products.', 'productId');
+  });
+  if (!product.isActive && productId !== existing?.productId) {
+    throw httpError(400, `${product.name} is inactive. Activate it in Products first.`, 'productId');
+  }
+  const clash = await ProducerOffer.findOne({
+    where: { producerId: producerIdOf(req), productId, ...(existing ? { id: { [Op.ne]: existing.id } } : {}) },
+    attributes: ['id', 'couponCode'],
+  });
+  if (clash) throw httpError(409, `${product.name} already has a discount (${clash.couponCode}). Edit that one instead.`, 'productId');
+
   const couponCode = opt(body.couponCode, 60);
   if (!couponCode) throw httpError(400, 'Enter the coupon code.', 'couponCode');
-  if (body.validTill && !validDate(body.validTill)) throw httpError(400, 'Choose a valid date.', 'validTill');
-  const productId = body.productId ? Number(body.productId) : null;
-  if (productId) await ownProduct(req, productId);
+  if (/\s/.test(couponCode)) throw httpError(400, 'A coupon code has no spaces.', 'couponCode');
+  const discountPercent = discount(body.discountPercent);
+  if (!discountPercent) throw httpError(400, 'Enter a discount between 0.01 and 100%.', 'discountPercent');
+  if (!validDate(body.validTill)) throw httpError(400, 'Choose the expiry date.', 'validTill');
+  if (body.validTill < todayIST() && body.validTill !== existing?.validTill) {
+    throw httpError(400, 'The expiry date can’t be in the past.', 'validTill');
+  }
   return {
-    title,
-    couponCode,
-    details: opt(body.details, 2000),
-    validTill: body.validTill || null,
     productId,
-    isActive: body.isActive === undefined ? true : bool(body.isActive),
+    couponCode,
+    discountPercent,
+    validTill: body.validTill,
+    title: `${discountPercent}% off ${product.name}`.slice(0, 160),
+    ...(body.details !== undefined ? { details: opt(body.details, 2000) } : {}),
+    // Saving a discount (re)activates it; it ends on its expiry date.
+    isActive: true,
   };
 };
 
@@ -373,12 +393,12 @@ const listOffers = async (req, res) => {
   }
 };
 
-// POST /api/connect/producer/offers { title, couponCode, details?, validTill?, productId?, isActive? }
+// POST /api/connect/producer/offers { productId, couponCode, discountPercent, validTill }
 const createOffer = async (req, res) => {
   try {
     const offer = await ProducerOffer.create({ ...(await readOfferFields(req)), producerId: producerIdOf(req), createdBy: req.user.id });
     await offer.reload({ include: offerInclude });
-    return res.status(201).json({ message: 'Offer added.', offer: offerJson(offer) });
+    return res.status(201).json({ message: 'Discount added.', offer: offerJson(offer) });
   } catch (err) {
     return fail(res, err, 'Could not add the offer.');
   }
@@ -386,7 +406,7 @@ const createOffer = async (req, res) => {
 
 const ownOffer = async (req) => {
   const offer = await ProducerOffer.findOne({ where: { id: req.params.id, producerId: producerIdOf(req) } });
-  if (!offer) throw httpError(404, 'Offer not found.');
+  if (!offer) throw httpError(404, 'Discount not found.');
   return offer;
 };
 
@@ -394,9 +414,9 @@ const ownOffer = async (req) => {
 const updateOffer = async (req, res) => {
   try {
     const offer = await ownOffer(req);
-    await offer.update(await readOfferFields(req));
+    await offer.update(await readOfferFields(req, offer));
     await offer.reload({ include: offerInclude });
-    return res.status(200).json({ message: 'Offer saved.', offer: offerJson(offer) });
+    return res.status(200).json({ message: 'Discount saved.', offer: offerJson(offer) });
   } catch (err) {
     return fail(res, err, 'Could not save the offer.');
   }
@@ -407,7 +427,7 @@ const deleteOffer = async (req, res) => {
   try {
     const offer = await ownOffer(req);
     await offer.destroy();
-    return res.status(200).json({ message: 'Offer deleted.' });
+    return res.status(200).json({ message: 'Discount deleted.' });
   } catch (err) {
     return fail(res, err, 'Could not delete the offer.');
   }

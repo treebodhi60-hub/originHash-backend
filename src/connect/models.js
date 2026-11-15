@@ -56,6 +56,7 @@ const ProducerOffer = sequelize.define(
     productId: fk(),
     title: { type: DataTypes.STRING(160), allowNull: false },
     couponCode: { type: DataTypes.STRING(60), allowNull: true },
+    discountPercent: { type: DataTypes.DECIMAL(5, 2), allowNull: true },
     details: { type: DataTypes.TEXT, allowNull: true },
     validTill: { type: DataTypes.DATEONLY, allowNull: true },
     isActive: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: true },
