@@ -340,6 +340,22 @@ const updateProduct = async (req, res) => {
   }
 };
 
+// PATCH /api/connect/producer/products/:id/active { active } — the product page's Active switch,
+// saved on its own as soon as it's flipped.
+const setProductActive = async (req, res) => {
+  try {
+    const product = await ownProduct(req);
+    const active = bool((req.body || {}).active);
+    await product.update({ isActive: active });
+    return res.status(200).json({
+      message: active ? `${product.name} is active again.` : `${product.name} is now inactive. It can’t be chosen for new QR batch requests.`,
+      product: productJson(product, req),
+    });
+  } catch (err) {
+    return fail(res, err, 'Could not change the product.');
+  }
+};
+
 // ---------- Discounts / loyalty offers ----------
 
 // A product's discount: { productId, couponCode, discountPercent, validTill }. One per product; the
@@ -707,6 +723,7 @@ module.exports = {
   createProduct,
   getProduct,
   updateProduct,
+  setProductActive,
   listOffers,
   createOffer,
   updateOffer,

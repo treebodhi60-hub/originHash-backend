@@ -59,6 +59,7 @@ pr.get('/products', producer.listProducts);
 pr.post('/products', producer.createProduct);
 pr.get('/products/:id', producer.getProduct);
 pr.put('/products/:id', producer.updateProduct);
+pr.patch('/products/:id/active', producer.setProductActive);
 pr.get('/offers', producer.listOffers);
 pr.post('/offers', producer.createOffer);
 pr.put('/offers/:id', producer.updateOffer);
