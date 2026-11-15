@@ -26,6 +26,7 @@ const {
   unitJson,
   scanJson,
   warrantyJson,
+  personOf,
 } = require('../serialize');
 const { MOBILE_REGEX, EMAIL_REGEX, USERNAME_REGEX, text, opt, bool, validDate, todayIST, discount, unitIdFromSerial, serialOf, fail, httpError } = require('../util');
 
@@ -123,6 +124,77 @@ const overview = async (req, res) => {
     });
   } catch (err) {
     return fail(res, err, 'Could not load the dashboard.');
+  }
+};
+
+// GET /api/connect/producer/history?filter=&q=&page=&pageSize= — the supply-chain history of the
+// producer's QR codes, newest first: distributor / retailer scans, sales, consumer scans and the
+// producer team's own scans. Searchable by serial, batch, product, person or place.
+const HISTORY_FILTERS = {
+  all: '',
+  trade: "AND s.qr_type = 'retailer' AND s.action = 'scan' AND s.actor_type IN ('distributor', 'retailer')",
+  sold: "AND s.action = 'sold'",
+  consumer: "AND s.qr_type = 'consumer'",
+  team: "AND s.actor_type = 'producer'",
+  mine: 'AND s.user_id = :me',
+};
+const history = async (req, res) => {
+  try {
+    const filter = HISTORY_FILTERS[req.query.filter] !== undefined ? req.query.filter : 'all';
+    const pageSize = [10, 20, 50].includes(Number(req.query.pageSize)) ? Number(req.query.pageSize) : 20;
+    const q = String(req.query.q || '').trim().slice(0, 100);
+    const serialId = unitIdFromSerial(q);
+    const like = `%${q.replace(/[\\%_]/g, (c) => `\\${c}`)}%`;
+    const search = q
+      ? `AND (b.batch_no LIKE :like OR p.name LIKE :like OR s.location_name LIKE :like
+              OR a.name LIKE :like OR a.business_name LIKE :like OR a.username LIKE :like OR a.city LIKE :like
+              ${serialId ? 'OR s.unit_id = :serialId' : ''})`
+      : '';
+    const from = `FROM chain_scans s
+        JOIN chain_units u ON u.id = s.unit_id
+        JOIN chain_batches b ON b.id = u.batch_id AND b.producer_id = :pid
+        LEFT JOIN producer_products p ON p.id = b.product_id
+        LEFT JOIN users a ON a.id = s.user_id
+       WHERE 1 = 1 ${HISTORY_FILTERS[filter]} ${search}`;
+    const replacements = { pid: producerIdOf(req), me: req.user.id, like, serialId };
+    const [{ total }] = await sequelize.query(`SELECT COUNT(*) AS total ${from}`, { replacements, type: QueryTypes.SELECT });
+    const totalPages = Math.max(1, Math.ceil(Number(total) / pageSize));
+    const page = Math.min(Math.max(1, Number(req.query.page) || 1), totalPages);
+    const rows = await sequelize.query(
+      `SELECT s.id, s.created_at AS at, s.qr_type AS qrType, s.action, s.actor_type AS actorType, s.user_id AS userId,
+              s.latitude, s.longitude, s.location_name AS locationName, s.unit_id AS unitId, u.status AS unitStatus,
+              b.id AS batchId, b.batch_no AS batchNo, p.id AS productId, p.name AS productName,
+              a.name AS userName, a.business_name AS businessName, a.username, a.mobile, a.city
+         ${from}
+        ORDER BY s.id DESC LIMIT :limit OFFSET :offset`,
+      { replacements: { ...replacements, limit: pageSize, offset: (page - 1) * pageSize }, type: QueryTypes.SELECT }
+    );
+    return res.status(200).json({
+      page,
+      pageSize,
+      total: Number(total),
+      totalPages,
+      history: rows.map((r) => ({
+        id: r.id,
+        at: r.at,
+        qrType: r.qrType,
+        action: r.action,
+        actorType: r.actorType,
+        isYou: r.userId === req.user.id,
+        // Who it was (no phone numbers: consumers show by name or a masked number).
+        by: (({ mobile, ...who }) => who)(
+          personOf({ actorType: r.actorType, user: r.userId ? { name: r.userName, businessName: r.businessName, username: r.username, mobile: r.mobile, city: r.city } : null })
+        ),
+        location: r.latitude !== null && r.longitude !== null ? { latitude: Number(r.latitude), longitude: Number(r.longitude), name: r.locationName } : null,
+        unitId: r.unitId,
+        serial: serialOf(r.unitId),
+        unitStatus: r.unitStatus,
+        batch: { id: r.batchId, batchNo: r.batchNo },
+        product: r.productId ? { id: r.productId, name: r.productName } : null,
+      })),
+    });
+  } catch (err) {
+    return fail(res, err, 'Could not load the history.');
   }
 };
 
@@ -699,6 +771,7 @@ module.exports = {
   updateSettings,
   overview,
   uploadFile,
+  history,
   listUsers,
   userLogins,
   createUser,

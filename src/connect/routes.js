@@ -49,6 +49,7 @@ pr.use(signedIn, allow('producer'));
 pr.get('/me', producer.me);
 pr.post('/password', producer.changePassword);
 pr.get('/overview', producer.overview);
+pr.get('/history', producer.history);
 pr.put('/settings', producerAdmin, producer.updateSettings);
 pr.post('/uploads', singleFile, producer.uploadFile);
 pr.get('/users', producer.listUsers);
