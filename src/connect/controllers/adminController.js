@@ -5,6 +5,7 @@ const { recordProfileVersion } = require('../../utils/profileHistory');
 const { allotBatch, batchTotals, sendBatchFile, sendUnitQr, readPrintLayout } = require('../batches');
 const { withLoginStats, loginHistory } = require('../logins');
 const { queryHistory } = require('../history');
+const { readRetailer, saveRetailer } = require('../retailers');
 const { isStoredRef, storeFile, fileJson } = require('../files');
 const { producerJson, producerUserJson, accountJson, batchJson, requestJson, unitJson, productJson } = require('../serialize');
 const { MOBILE_REGEX, EMAIL_REGEX, USERNAME_REGEX, text, opt, bool, validDate, discount, fail, httpError } = require('../util');
@@ -313,18 +314,18 @@ const readAccountFields = (body, role) => {
   const email = opt(body.email, 150);
   if (email && !EMAIL_REGEX.test(email)) throw httpError(400, 'Enter a valid email address.', 'email');
   const businessName = opt(body.businessName, 160);
-  if (role !== 'consumer' && !businessName) throw httpError(400, 'Enter the business name.', 'businessName');
+  if (role === 'distributor' && !businessName) throw httpError(400, 'Enter the business name.', 'businessName');
   return { name, email, businessName, city: opt(body.city, 120), address: opt(body.address, 255) };
 };
 
 const roleColumns = (role) => (role === 'consumer' ? { partnerRole: null, userType: 'consumer' } : { partnerRole: role, userType: role });
 
-// A retailer's producer (required: they may mark only that producer's products sold). Others: none.
+// A retailer's producer, or none: a general retailer (may sell any producer's batch that allows all
+// retailers). Distributors and consumers: none.
 const readPartnerProducer = async (body, role) => {
   if (role !== 'retailer') return { partnerProducerId: null };
   const producerId = Number(body.producerId) || null;
-  if (!producerId) throw httpError(400, 'Choose the producer this retailer sells for.', 'producerId');
-  if (!(await Producer.findByPk(producerId, { attributes: ['id'] }))) throw httpError(400, 'Choose one of the producers.', 'producerId');
+  if (producerId && !(await Producer.findByPk(producerId, { attributes: ['id'] }))) throw httpError(400, 'Choose one of the producers.', 'producerId');
   return { partnerProducerId: producerId };
 };
 const accountInclude = [{ model: Producer, as: 'partnerProducer', attributes: ['id', 'name'] }];
@@ -336,6 +337,18 @@ const createAccount = async (req, res) => {
     const body = req.body || {};
     const role = body.role;
     if (!ROLES.includes(role)) throw httpError(400, 'Choose distributor, retailer or consumer.', 'role');
+    // Retailers: name, mobile, email (+ optional shop details) and their producer, or general.
+    if (role === 'retailer') {
+      const { partnerProducerId } = await readPartnerProducer(body, role);
+      const { user, outcome } = await saveRetailer(readRetailer(body), partnerProducerId, req.user.id);
+      await user.reload({ include: accountInclude });
+      const label = user.businessName || user.name;
+      const whose = user.partnerProducer ? `a retailer of ${user.partnerProducer.name}` : 'a general retailer';
+      return res.status(201).json({
+        message: outcome === 'created' ? `${label} added as ${whose}.` : outcome === 'upgraded' ? `The existing account of ${label} is now ${whose}.` : `${label} is now ${whose}.`,
+        account: accountJson(user),
+      });
+    }
     const mobile = text(body.mobile, 15);
     if (!MOBILE_REGEX.test(mobile)) throw httpError(400, 'Enter a valid 10-digit mobile number.', 'mobile');
     const fields = { ...readAccountFields(body, role), ...(await readPartnerProducer(body, role)) };

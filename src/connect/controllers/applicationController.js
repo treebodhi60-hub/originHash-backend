@@ -1,10 +1,11 @@
 const { sequelize, User, Producer, PartnerApplication } = require('../models');
 const { recordProfileVersion } = require('../../utils/profileHistory');
-const { maskMobile, text, opt, fail, httpError } = require('../util');
+const { EMAIL_REGEX, maskMobile, text, opt, fail, httpError } = require('../util');
 
-// Retailer sign-up: any signed-in ordinary user applies (business, city, address, the producer
-// they sell for); the OriginHash superadmin approves — making them a retailer associated with one
-// producer, whose products they may mark sold — or rejects.
+// Retailer self-registration: any signed-in ordinary user registers (name, email, shop, city and,
+// optionally, the producer they sell for) and is a general retailer at once. The OriginHash
+// superadmin approves the request — associating them with one producer — or rejects it, which
+// leaves them a general retailer.
 
 const applicationJson = (a, { forAdmin = false } = {}) =>
   a && {
@@ -36,8 +37,8 @@ const applicationJson = (a, { forAdmin = false } = {}) =>
 const producerInclude = { model: Producer, as: 'producer', attributes: ['id', 'name'] };
 const activeProducers = () => Producer.findAll({ where: { isBlocked: false }, attributes: ['id', 'name'], order: [['name', 'ASC']] });
 
-// Only ordinary users (not producers, admins or existing distributors / retailers) can apply.
-const mayApply = (req) => req.chainRole === 'consumer';
+// Ordinary users, and general retailers (not yet associated with a producer), can apply.
+const mayApply = (req) => req.chainRole === 'consumer' || (req.chainRole === 'retailer' && !req.user.partnerProducerId);
 
 // GET /api/connect/me/retailer-application — the latest application and the producers to pick from.
 const myApplication = async (req, res) => {
@@ -49,6 +50,7 @@ const myApplication = async (req, res) => {
     return res.status(200).json({
       canApply: mayApply(req),
       role: req.chainRole,
+      producerId: req.user.partnerProducerId || null,
       producerName: req.user.partnerProducerId ? (await Producer.findByPk(req.user.partnerProducerId, { attributes: ['name'] }))?.name || null : null,
       application: applicationJson(application),
       producers: producers.map((p) => ({ id: p.id, name: p.name })),
@@ -58,39 +60,57 @@ const myApplication = async (req, res) => {
   }
 };
 
-// POST /api/connect/me/retailer-application { businessName, city, address?, producerId, note? }
+// POST /api/connect/me/retailer-application { name, email?, businessName?, city, address?, producerId?, note? }
+// Registering makes the user a general retailer straight away (they can mark sold any batch open
+// to all retailers); OriginHash's approval associates them with a producer.
 const apply = async (req, res) => {
   try {
-    if (!mayApply(req)) throw httpError(409, req.chainRole === 'retailer' ? 'You are already a retailer.' : "Your account can't apply to be a retailer.");
+    if (!mayApply(req)) throw httpError(409, req.chainRole === 'retailer' ? 'You are already a retailer of a producer.' : "Your account can't register as a retailer.");
     const body = req.body || {};
-    const businessName = text(body.businessName, 160);
-    if (!businessName) throw httpError(400, 'Enter your shop or business name.', 'businessName');
+    const name = text(body.name, 120) || req.user.name;
+    if (!name) throw httpError(400, 'Enter your name.', 'name');
+    const email = opt(body.email, 150);
+    if (email && !EMAIL_REGEX.test(email)) throw httpError(400, 'Enter a valid email address.', 'email');
+    const businessName = opt(body.businessName, 160);
     const city = text(body.city, 120);
     if (!city) throw httpError(400, 'Enter your city.', 'city');
+    const address = opt(body.address, 255);
     const producerId = Number(body.producerId) || null;
-    if (!producerId) throw httpError(400, 'Choose the producer whose products you sell.', 'producerId');
-    if (!(await Producer.findOne({ where: { id: producerId, isBlocked: false }, attributes: ['id'] }))) {
+    if (producerId && !(await Producer.findOne({ where: { id: producerId, isBlocked: false }, attributes: ['id'] }))) {
       throw httpError(400, 'Choose one of the producers.', 'producerId');
     }
     if (await PartnerApplication.findOne({ where: { userId: req.user.id, status: 'pending' }, attributes: ['id'] })) {
-      throw httpError(409, 'Your application is already waiting for OriginHash. You can apply again if it is rejected.');
+      throw httpError(409, 'Your request is already waiting for OriginHash.');
     }
-    const application = await PartnerApplication.create({
-      userId: req.user.id,
-      role: 'retailer',
-      producerId,
-      businessName,
-      city,
-      address: opt(body.address, 255),
-      note: opt(body.note, 500),
+    const application = await sequelize.transaction(async (transaction) => {
+      const user = await User.findByPk(req.user.id, { transaction, lock: transaction.LOCK.UPDATE });
+      await user.update(
+        {
+          name,
+          ...(email ? { email } : {}),
+          ...(businessName ? { businessName } : {}),
+          city,
+          ...(address ? { address } : {}),
+          partnerRole: 'retailer',
+          userType: 'retailer',
+          profileCompleted: true,
+        },
+        { transaction }
+      );
+      await recordProfileVersion(user, { source: 'self', changedBy: user.id, transaction });
+      return PartnerApplication.create(
+        { userId: user.id, role: 'retailer', producerId, businessName: businessName || name, city, address, note: opt(body.note, 500) },
+        { transaction }
+      );
     });
     await application.reload({ include: [producerInclude] });
     return res.status(201).json({
-      message: 'Application sent. OriginHash will review it; once approved you can mark products sold.',
+      message:
+        'You are now a general retailer: you can mark sold the products of batches open to all retailers. OriginHash will review your request to associate you with a producer.',
       application: applicationJson(application),
     });
   } catch (err) {
-    return fail(res, err, 'Could not send your application.');
+    return fail(res, err, 'Could not register you as a retailer.');
   }
 };
 
@@ -134,7 +154,7 @@ const approve = async (req, res) => {
       if (!user) throw httpError(404, 'The applicant no longer has an account.');
       if (user.isAdmin || user.isSuperAdmin || user.producerId) throw httpError(409, 'The applicant is now an admin or producer account.');
       if (user.partnerRole && user.partnerRole !== 'retailer') throw httpError(409, `The applicant is already a ${user.partnerRole}.`);
-      const businessName = text(body.businessName ?? application.businessName, 160) || application.businessName;
+      const businessName = opt(body.businessName, 160) || user.businessName || null;
       const city = opt(body.city ?? application.city, 120);
       const address = opt(body.address ?? application.address, 255);
       await user.update(
@@ -143,7 +163,16 @@ const approve = async (req, res) => {
       );
       await recordProfileVersion(user, { source: 'admin', changedBy: req.user.id, transaction });
       await application.update(
-        { status: 'approved', producerId: producer.id, businessName, city, address, decidedBy: req.user.id, decidedAt: new Date(), decisionNote: opt(body.decisionNote, 500) },
+        {
+          status: 'approved',
+          producerId: producer.id,
+          businessName: businessName || application.businessName,
+          city,
+          address,
+          decidedBy: req.user.id,
+          decidedAt: new Date(),
+          decisionNote: opt(body.decisionNote, 500),
+        },
         { transaction }
       );
       return { application, user, producer };
@@ -166,7 +195,7 @@ const reject = async (req, res) => {
         { transaction }
       );
     });
-    return res.status(200).json({ message: 'Application rejected.' });
+    return res.status(200).json({ message: 'Request declined. They stay a general retailer, not associated with any producer.' });
   } catch (err) {
     return fail(res, err, 'Could not reject the application.');
   }

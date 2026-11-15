@@ -98,6 +98,7 @@ const batchJson = (b, totals = {}) =>
     expiryDate: b.expiryDate,
     notes: b.notes,
     printLayout: { pageSize: b.printPageSize || 'A4', perPage: b.printPerPage || 40, orientation: b.printOrientation || 'horizontal' },
+    soldAccess: b.soldAccess || 'all',
     allottedAt: b.createdAt,
     sold: Number(totals.sold || 0),
     consumerScans: Number(totals.consumerScans || 0),

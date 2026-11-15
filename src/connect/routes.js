@@ -8,6 +8,7 @@ const producer = require('./controllers/producerController');
 const qr = require('./controllers/qrController');
 const chat = require('./controllers/chatController');
 const applications = require('./controllers/applicationController');
+const retailers = require('./controllers/retailerController');
 
 // Supply-chain module, mounted at /api/connect. Everyone signs in with their normal app account
 // (the app's own token); ./access works out what they are in the supply chain.
@@ -44,6 +45,9 @@ hq.post('/batches', admin.createBatch);
 hq.get('/batches/:id', admin.getBatch);
 hq.get('/batches/:id/file/:format(pdf|csv)', admin.downloadBatch);
 hq.put('/batches/:id/print-layout', admin.updatePrintLayout);
+hq.put('/batches/:id/sold-access', retailers.setAdminSoldAccess);
+hq.get('/retailers/template', retailers.template);
+hq.post('/retailers/bulk', retailers.sheetUpload, retailers.importAny);
 hq.get('/units/:id/qr/:format(json|pdf)', admin.unitQr);
 router.use('/admin', hq);
 
@@ -76,6 +80,13 @@ pr.post('/batch-requests', producer.createRequest);
 pr.get('/batches', producer.listBatches);
 pr.get('/batches/:id', producer.getBatch);
 pr.get('/batches/:id/file/:format(pdf|csv)', producer.downloadBatch);
+pr.put('/batches/:id/sold-access', producerAdmin, retailers.setProducerSoldAccess);
+pr.get('/retailers', retailers.listMine);
+pr.get('/retailers/template', retailers.template);
+pr.post('/retailers', producerAdmin, retailers.createMine);
+pr.post('/retailers/bulk', producerAdmin, retailers.sheetUpload, retailers.importMine);
+pr.put('/retailers/:id', producerAdmin, retailers.updateMine);
+pr.delete('/retailers/:id', producerAdmin, retailers.removeMine);
 pr.get('/units/lookup', producer.lookupUnit);
 pr.get('/units/:id', producer.getUnit);
 pr.get('/units/:id/qr/:format(json|pdf)', producer.unitQr);
