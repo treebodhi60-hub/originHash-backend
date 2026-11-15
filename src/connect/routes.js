@@ -9,7 +9,7 @@ const qr = require('./controllers/qrController');
 const chat = require('./controllers/chatController');
 const applications = require('./controllers/applicationController');
 const retailers = require('./controllers/retailerController');
-const { queryHistory } = require('./history');
+const { queryHistory, mySupplySummary } = require('./history');
 
 // Supply-chain module, mounted at /api/connect. Everyone signs in with their normal app account
 // (the app's own token); ./access works out what they are in the supply chain.
@@ -103,10 +103,12 @@ router.use('/producer', pr);
 const me = express.Router();
 me.use(signedIn);
 me.get('/history', qr.myHistory);
-// A distributor's or retailer's own scans and sales: filterable, searchable, paginated.
-me.get('/supply-history', allow('distributor', 'retailer'), async (req, res) => {
+// Someone's own supply-chain scans (a consumer's consumer-QR scans; a distributor's / retailer's
+// scans and sales): filterable, searchable, paginated, with their totals.
+me.get('/supply-history', allow('consumer', 'distributor', 'retailer'), async (req, res) => {
   try {
-    return res.status(200).json(await queryHistory({ me: req.user.id, onlyMine: true, query: req.query }));
+    const [page, summary] = await Promise.all([queryHistory({ me: req.user.id, onlyMine: true, query: req.query }), mySupplySummary(req.user.id)]);
+    return res.status(200).json({ ...page, summary });
   } catch (err) {
     return fail(res, err, 'Could not load your history.');
   }

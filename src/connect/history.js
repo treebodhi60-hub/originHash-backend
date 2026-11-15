@@ -93,4 +93,18 @@ const queryHistory = async ({ producerId = null, me, onlyMine = false, query = {
   };
 };
 
-module.exports = { queryHistory };
+// Someone's own supply-chain totals: scans, distinct products (units) and brands, the units they
+// marked sold, and coupons they claimed.
+const mySupplySummary = async (userId) => {
+  const [row] = await sequelize.query(
+    `SELECT COUNT(*) AS scans, COUNT(DISTINCT s.unit_id) AS products, COUNT(DISTINCT b.producer_id) AS brands,
+            COALESCE(SUM(s.action = 'sold'), 0) AS sold,
+            (SELECT COUNT(*) FROM chain_units cu WHERE cu.coupon_claimed_by = :uid) AS coupons
+       FROM chain_scans s JOIN chain_units u ON u.id = s.unit_id JOIN chain_batches b ON b.id = u.batch_id
+      WHERE s.user_id = :uid`,
+    { replacements: { uid: userId }, type: QueryTypes.SELECT }
+  );
+  return { scans: Number(row.scans), products: Number(row.products), brands: Number(row.brands), sold: Number(row.sold), coupons: Number(row.coupons) };
+};
+
+module.exports = { queryHistory, mySupplySummary };
