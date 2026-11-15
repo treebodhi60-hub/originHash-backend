@@ -167,7 +167,7 @@ const setSoldAccess = (scope) => async (req, res) => {
     return res.status(200).json({
       message:
         soldAccess === 'all'
-          ? `Every retailer of ${batch.producer.name} and every general retailer can now mark this batch's products sold.`
+          ? `Every retailer on OriginHash (${batch.producer.name}'s, other producers' and general retailers) can now mark this batch's products sold.`
           : `Only retailers of ${batch.producer.name} can now mark this batch's products sold.`,
       batch: batchJson(batch, totals.get(batch.id)),
     });

@@ -82,13 +82,13 @@ const productBasics = (product, req) =>
 const ownsUnit = (req, unit) => req.chainRole === 'producer' && req.producer.id === unit.batch.producerId;
 
 // Who may press Sold on a unit of `batch`: the superadmin, the unit's own producer, a retailer
-// associated with that producer, and — when the batch's Sold access is 'all' (the default) — general
-// retailers (not associated with any producer). Other producers and their retailers only scan.
+// associated with that producer, and — when the batch's Sold access is 'all' (the default) — every
+// other retailer too (general ones and other producers' retailers). Other producers only scan.
 const isOwnProducer = (req, producerId) => req.chainRole === 'producer' && Number(req.producer.id) === Number(producerId);
 const retailerAccess = (req, batch) => {
   if (req.chainRole !== 'retailer') return null;
-  if (!req.user.partnerProducerId) return batch.soldAccess === 'producer' ? 'producerRetailersOnly' : 'ok';
-  return Number(req.user.partnerProducerId) === Number(batch.producerId) ? 'ok' : 'otherProducer';
+  if (Number(req.user.partnerProducerId) === Number(batch.producerId)) return 'ok';
+  return batch.soldAccess === 'producer' ? 'producerRetailersOnly' : 'ok';
 };
 const mayMarkSold = (req, batch) => req.chainRole === 'admin' || isOwnProducer(req, batch.producerId) || retailerAccess(req, batch) === 'ok';
 // Why someone in the trade can't sell it: 'otherProducer' | 'producerRetailersOnly' | null.
@@ -186,8 +186,8 @@ const markSold = async (req, res) => {
         throw httpError(
           403,
           batch.soldAccess === 'producer'
-            ? `Only ${batch.producer.name} or its own retailers can mark this product sold (general retailers can't, for this batch).`
-            : `Only ${batch.producer.name}, its retailers or general retailers can mark this product sold.`
+            ? `Only ${batch.producer.name} or its own retailers can mark this product sold.`
+            : `Only ${batch.producer.name} or a retailer can mark this product sold.`
         );
       }
 
