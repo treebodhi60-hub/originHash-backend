@@ -314,8 +314,15 @@ const openConsumerQr = async (req, res) => {
     const offers = await offersFor(producer.id, batch.productId, today);
     const isConsumer = req.chainRole === 'consumer';
     const pct = percent(unit.discountPercent);
+    // The product's discount (Discounts tab): its image, shown instead of the bare percentage, and
+    // its rupee limits (0 = none).
+    const productOffer = offers.find((o) => o.productId && o.productId === batch.productId) || null;
     const discount = {
       percent: pct,
+      offerId: productOffer ? productOffer.id : null,
+      image: productOffer ? fileJson(productOffer.imageUrl, req, productOffer.imageName) : null,
+      minAmount: productOffer?.minAmount || 0,
+      maxAmount: productOffer?.maxAmount || 0,
       hasCoupon: Boolean(unit.couponCode),
       validTill: unit.couponCode ? batch.expiryDate : null,
       expired: Boolean(unit.couponCode) && batch.expiryDate < today,
@@ -334,6 +341,10 @@ const openConsumerQr = async (req, res) => {
         title: o.title,
         details: o.details,
         validTill: o.validTill,
+        discountPercent: percent(o.discountPercent),
+        image: fileJson(o.imageUrl, req, o.imageName),
+        minAmount: o.minAmount || 0,
+        maxAmount: o.maxAmount || 0,
         couponCode: req.user ? o.couponCode : null,
       })),
     };

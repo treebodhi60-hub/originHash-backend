@@ -11,10 +11,11 @@ const { labelQrBuffer, streamQrLabelPdf } = require('../utils/stickerPdf');
 
 const MAX_QUANTITY = 5000;
 
-// Batch numbers: one sequence across OriginHash (OHB-0001, OHB-0002…), never typed in. The counter is
-// a row in oh_sequences, bumped inside the allotment's transaction: concurrent allotments wait on that
-// row (no shared numbers), and a failed allotment rolls the counter back (no gaps). Without a
-// transaction, `nextBatchNo()` only peeks — for forms to show the number ahead of time.
+// Batch numbers are typed in by the producer (in a request) or the superadmin (when allotting) and
+// don't have to be unique. The OriginHash sequence (OHB-0001, OHB-0002…) is the suggestion, and the
+// number used when none is entered. Its counter is a row in oh_sequences, bumped inside the
+// allotment's transaction (concurrent allotments wait on that row; a failed one rolls it back).
+// Without a transaction, `nextBatchNo()` only peeks — for forms to suggest the number.
 const batchNoOf = (n) => `OHB-${String(n).padStart(4, '0')}`;
 const nextBatchNo = async (transaction) => {
   if (!transaction) {
@@ -29,14 +30,28 @@ const nextBatchNo = async (transaction) => {
   return batchNoOf(Number(rows[0].n));
 };
 
+// The number a new batch gets: the one typed in, else the next in the sequence. A typed OHB- number
+// moves the counter past it, so the next suggestion doesn't repeat it.
+const batchNoToUse = async (typed, transaction) => {
+  if (!typed) return nextBatchNo(transaction);
+  const m = /^OHB-(\d+)$/i.exec(typed);
+  if (m) {
+    await sequelize.query(
+      "INSERT INTO oh_sequences (name, value) VALUES ('batch_no', :n) ON DUPLICATE KEY UPDATE value = GREATEST(value, :n)",
+      { replacements: { n: Number(m[1]) }, transaction }
+    );
+  }
+  return typed;
+};
+
 // Creates the batch and its units in one transaction. A token or coupon clash is vanishingly rare,
 // so on one the whole batch is simply tried again. Resolves to the batch.
-const allotBatch = async ({ producerId, productId = null, quantity, maxDiscountPercent, expiryDate, notes = null, allottedBy }, outer) => {
+const allotBatch = async ({ producerId, productId = null, batchNo: typedBatchNo = null, quantity, maxDiscountPercent, expiryDate, notes = null, allottedBy }, outer) => {
   if (!Number.isInteger(quantity) || quantity < 1 || quantity > MAX_QUANTITY) {
     throw httpError(400, `A batch can have between 1 and ${MAX_QUANTITY.toLocaleString('en-IN')} units.`, 'quantity');
   }
   const run = async (transaction) => {
-    const batchNo = await nextBatchNo(transaction);
+    const batchNo = await batchNoToUse(typedBatchNo, transaction);
     const batch = await ChainBatch.create(
       { producerId, productId, batchNo, quantity, maxDiscountPercent, expiryDate, notes, allottedBy },
       { transaction }

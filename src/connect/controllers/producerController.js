@@ -127,7 +127,7 @@ const history = async (req, res) => {
 const uploadFile = async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ message: 'Choose a file to upload.' });
-    const folder = ['products', 'certificates', 'warranty', 'identity'].includes(req.body?.folder) ? req.body.folder : 'products';
+    const folder = ['products', 'certificates', 'warranty', 'identity', 'offers'].includes(req.body?.folder) ? req.body.folder : 'products';
     const ref = await storeFile(req.file, folder);
     return res.status(201).json({ file: fileJson(ref, req, req.file.originalname) });
   } catch (err) {
@@ -382,10 +382,25 @@ const readOfferFields = async (req, existing = null) => {
   if (body.validTill < todayIST() && body.validTill !== existing?.validTill) {
     throw httpError(400, 'The expiry date can’t be in the past.', 'validTill');
   }
+  // Optional image (uploaded to connect/offers); the discount % is still required with it.
+  const imageRef = typeof body.image === 'string' ? body.image : body.image?.ref;
+  if (imageRef && !(isStoredRef(imageRef) && /(^|\/)connect\/offers\//.test(decodeURIComponent(imageRef)))) {
+    throw httpError(400, 'Upload the discount image again.', 'image');
+  }
+  // Rupee limits from the sliders: 0 (no limit) to 500, in steps of 10.
+  const amount = (key, label) => {
+    const v = body[key] === undefined || body[key] === '' || body[key] === null ? 0 : Number(body[key]);
+    if (!Number.isInteger(v) || v < 0 || v > 500 || v % 10) throw httpError(400, `${label}: ₹0 to ₹500, in steps of ₹10.`, key);
+    return v;
+  };
   return {
     productId,
     couponCode,
     discountPercent,
+    imageUrl: imageRef || null,
+    imageName: imageRef ? opt(body.image?.name, 200) : null,
+    minAmount: amount('minAmount', 'Minimum purchase'),
+    maxAmount: amount('maxAmount', 'Maximum discount'),
     validTill: body.validTill,
     title: `${discountPercent}% off ${product.name}`.slice(0, 160),
     ...(body.details !== undefined ? { details: opt(body.details, 2000) } : {}),
@@ -400,18 +415,18 @@ const offerInclude = [{ model: ProducerProduct, as: 'product', attributes: ['id'
 const listOffers = async (req, res) => {
   try {
     const offers = await ProducerOffer.findAll({ where: { producerId: producerIdOf(req) }, include: offerInclude, order: [['createdAt', 'DESC']] });
-    return res.status(200).json({ offers: offers.map(offerJson) });
+    return res.status(200).json({ offers: offers.map((o) => offerJson(o, req)) });
   } catch (err) {
     return fail(res, err, 'Could not load offers.');
   }
 };
 
-// POST /api/connect/producer/offers { productId, couponCode, discountPercent, validTill }
+// POST /api/connect/producer/offers { productId, couponCode, discountPercent, validTill, image?, minAmount?, maxAmount? }
 const createOffer = async (req, res) => {
   try {
     const offer = await ProducerOffer.create({ ...(await readOfferFields(req)), producerId: producerIdOf(req), createdBy: req.user.id });
     await offer.reload({ include: offerInclude });
-    return res.status(201).json({ message: 'Discount added.', offer: offerJson(offer) });
+    return res.status(201).json({ message: 'Discount added.', offer: offerJson(offer, req) });
   } catch (err) {
     return fail(res, err, 'Could not add the offer.');
   }
@@ -429,7 +444,7 @@ const updateOffer = async (req, res) => {
     const offer = await ownOffer(req);
     await offer.update(await readOfferFields(req, offer));
     await offer.reload({ include: offerInclude });
-    return res.status(200).json({ message: 'Discount saved.', offer: offerJson(offer) });
+    return res.status(200).json({ message: 'Discount saved.', offer: offerJson(offer, req) });
   } catch (err) {
     return fail(res, err, 'Could not save the offer.');
   }
@@ -475,7 +490,7 @@ const currentOfferOf = (req, productId) =>
     order: [['updatedAt', 'DESC']],
   });
 
-// POST /api/connect/producer/batch-requests { productId, quantity, expiryDate, note? }
+// POST /api/connect/producer/batch-requests { productId, quantity, expiryDate, batchNo?, note? }
 // The max discount is always the product's current discount (set only in the Discounts tab).
 // QR codes are free for now; the OriginHash superadmin allots the batch.
 const createRequest = async (req, res) => {
@@ -494,14 +509,14 @@ const createRequest = async (req, res) => {
     const offer = await currentOfferOf(req, productId);
     const maxDiscountPercent = offer ? discount(offer.discountPercent) || null : null;
     if (!validDate(body.expiryDate)) throw httpError(400, 'Choose the expiry date.', 'expiryDate');
-    // No batch number: it's assigned when OriginHash allots the batch (one sequence, OHB-0001…).
+    // The producer's batch number, if any (not unique). Empty: OriginHash sets it when allotting.
     const request = await ChainBatchRequest.create({
       producerId: producerIdOf(req),
       productId,
       quantity,
       maxDiscountPercent,
       expiryDate: body.expiryDate,
-      batchNo: null,
+      batchNo: opt(body.batchNo, 80),
       note: opt(body.note, 500),
       requestedBy: req.user.id,
     });

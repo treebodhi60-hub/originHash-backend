@@ -71,7 +71,7 @@ const productJson = (p, req) =>
     updatedAt: p.updatedAt,
   };
 
-const offerJson = (o) =>
+const offerJson = (o, req) =>
   o && {
     id: o.id,
     productId: o.productId,
@@ -79,6 +79,9 @@ const offerJson = (o) =>
     title: o.title,
     couponCode: o.couponCode,
     discountPercent: percent(o.discountPercent),
+    image: req ? fileJson(o.imageUrl, req, o.imageName) : null,
+    minAmount: o.minAmount || 0,
+    maxAmount: o.maxAmount || 0,
     details: o.details,
     validTill: o.validTill,
     isActive: o.isActive,

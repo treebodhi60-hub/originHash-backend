@@ -57,6 +57,12 @@ const ProducerOffer = sequelize.define(
     title: { type: DataTypes.STRING(160), allowNull: false },
     couponCode: { type: DataTypes.STRING(60), allowNull: true },
     discountPercent: { type: DataTypes.DECIMAL(5, 2), allowNull: true },
+    // Optional image shown to consumers instead of the bare percentage.
+    imageUrl: { type: DataTypes.STRING(500), allowNull: true },
+    imageName: { type: DataTypes.STRING(200), allowNull: true },
+    // Rupees; 0 = no limit. Minimum purchase, and the most the discount takes off.
+    minAmount: { type: DataTypes.INTEGER.UNSIGNED, allowNull: false, defaultValue: 0 },
+    maxAmount: { type: DataTypes.INTEGER.UNSIGNED, allowNull: false, defaultValue: 0 },
     details: { type: DataTypes.TEXT, allowNull: true },
     validTill: { type: DataTypes.DATEONLY, allowNull: true },
     isActive: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: true },
@@ -71,7 +77,7 @@ const ChainBatch = sequelize.define(
     id: pk,
     producerId: fk(false),
     productId: fk(),
-    // OHB-0001, OHB-0002… — one sequence across OriginHash (see ./batches), unique.
+    // Typed in by the producer or superadmin, not unique; suggested from the OHB- sequence (see ./batches).
     batchNo: { type: DataTypes.STRING(80), allowNull: false },
     quantity: { type: DataTypes.INTEGER.UNSIGNED, allowNull: false },
     maxDiscountPercent: { type: DataTypes.DECIMAL(5, 2), allowNull: true },

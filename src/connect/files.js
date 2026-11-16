@@ -11,7 +11,7 @@ const { uploadFileToS3, signedUrlFor } = require('../services/s3Service');
 // fresh, time-limited link (S3 folders aren't all public).
 
 const MAX_BYTES = 10 * 1024 * 1024;
-const FOLDERS = ['products', 'certificates', 'documents', 'warranty', 'identity', 'chat'];
+const FOLDERS = ['products', 'certificates', 'documents', 'warranty', 'identity', 'chat', 'offers'];
 const LOCAL_ROOT = path.join(__dirname, '..', '..', 'uploads');
 
 const upload = multer({
@@ -89,7 +89,7 @@ const isStoredRef = (ref) => {
     return (
       url.protocol === 'https:' &&
       isOwnS3Url(url) &&
-      /(^|\/)connect\/(products|certificates|documents|warranty|identity|chat)\//.test(decodeURIComponent(url.pathname))
+      /(^|\/)connect\/(products|certificates|documents|warranty|identity|chat|offers)\//.test(decodeURIComponent(url.pathname))
     );
   } catch {
     return false;

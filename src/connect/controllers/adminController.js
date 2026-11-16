@@ -473,12 +473,13 @@ const readBatchFields = async (body, producerId, fallback = {}) => {
     maxDiscountPercent,
     expiryDate,
     productId,
-    // No batchNo: batches are numbered automatically (OHB-0001…, see ../batches).
+    // Typed in (not unique); empty = the next OHB- number (see ../batches).
+    batchNo: opt(pick('batchNo'), 80),
     notes: opt(body.notes, 500),
   };
 };
 
-// POST /api/connect/admin/batch-requests/:id/allot { notes?, decisionNote? } — the rest comes from the request.
+// POST /api/connect/admin/batch-requests/:id/allot { batchNo?, notes?, decisionNote? } — the rest comes from the request.
 const allotRequest = async (req, res) => {
   try {
     const batch = await sequelize.transaction(async (transaction) => {
@@ -545,7 +546,7 @@ const listBatches = async (req, res) => {
   }
 };
 
-// POST /api/connect/admin/batches { producerId, quantity, maxDiscountPercent, expiryDate, productId, notes? }
+// POST /api/connect/admin/batches { producerId, quantity, maxDiscountPercent, expiryDate, productId, batchNo?, notes? }
 
 // GET /api/connect/admin/batches/next-number (and /producer/batches/next-number) — the number the
 // next batch will most likely get.
