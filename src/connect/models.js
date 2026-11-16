@@ -86,7 +86,7 @@ const ChainBatch = sequelize.define(
     allottedBy: fk(),
     // The PDF layout (set by the superadmin; see ./batches).
     printPageSize: { type: DataTypes.ENUM('A4', 'A3'), allowNull: false, defaultValue: 'A4' },
-    printPerPage: { type: DataTypes.TINYINT.UNSIGNED, allowNull: false, defaultValue: 40 },
+    printPerPage: { type: DataTypes.TINYINT.UNSIGNED, allowNull: false, defaultValue: 42 }, // max 42 horizontal / 48 vertical
     printOrientation: { type: DataTypes.ENUM('horizontal', 'vertical'), allowNull: false, defaultValue: 'horizontal' },
     // Who may press Sold: 'all' retailers (the producer's own + general) or only the 'producer''s.
     soldAccess: { type: DataTypes.ENUM('all', 'producer'), allowNull: false, defaultValue: 'all' },

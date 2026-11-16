@@ -11,7 +11,7 @@ const {
   ChainWarranty,
   User,
 } = require('../models');
-const { batchTotals, sendBatchFile, sendUnitQr, MAX_QUANTITY } = require('../batches');
+const { batchTotals, sendBatchFile, sendUnitQr, applyOfferToBatches, MAX_QUANTITY } = require('../batches');
 const { withLoginStats, loginHistory } = require('../logins');
 const { storeFile, fileJson, isStoredRef, refsFrom } = require('../files');
 const { publicUser } = require('../../controllers/authController');
@@ -422,11 +422,19 @@ const listOffers = async (req, res) => {
 };
 
 // POST /api/connect/producer/offers { productId, couponCode, discountPercent, validTill, image?, minAmount?, maxAmount? }
+// What saving a discount did to the product's QR batches, for the message.
+const appliedText = ({ batches, units }) =>
+  batches ? ` Updated on ${batches} QR batch${batches === 1 ? '' : 'es'} (${units} unit${units === 1 ? '' : 's'}); scans show it now.` : '';
+
 const createOffer = async (req, res) => {
   try {
-    const offer = await ProducerOffer.create({ ...(await readOfferFields(req)), producerId: producerIdOf(req), createdBy: req.user.id });
+    const fields = await readOfferFields(req);
+    const { offer, applied } = await sequelize.transaction(async (transaction) => {
+      const made = await ProducerOffer.create({ ...fields, producerId: producerIdOf(req), createdBy: req.user.id }, { transaction });
+      return { offer: made, applied: await applyOfferToBatches({ ...fields, producerId: producerIdOf(req) }, transaction) };
+    });
     await offer.reload({ include: offerInclude });
-    return res.status(201).json({ message: 'Discount added.', offer: offerJson(offer, req) });
+    return res.status(201).json({ message: `Discount added.${appliedText(applied)}`, offer: offerJson(offer, req), applied });
   } catch (err) {
     return fail(res, err, 'Could not add the offer.');
   }
@@ -442,9 +450,14 @@ const ownOffer = async (req) => {
 const updateOffer = async (req, res) => {
   try {
     const offer = await ownOffer(req);
-    await offer.update(await readOfferFields(req, offer));
+    const fields = await readOfferFields(req, offer);
+    // The discount and the product's batches change together (see applyOfferToBatches).
+    const applied = await sequelize.transaction(async (transaction) => {
+      await offer.update(fields, { transaction });
+      return applyOfferToBatches({ ...fields, producerId: producerIdOf(req) }, transaction);
+    });
     await offer.reload({ include: offerInclude });
-    return res.status(200).json({ message: 'Discount saved.', offer: offerJson(offer, req) });
+    return res.status(200).json({ message: `Discount saved.${appliedText(applied)}`, offer: offerJson(offer, req), applied });
   } catch (err) {
     return fail(res, err, 'Could not save the offer.');
   }

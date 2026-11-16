@@ -1,7 +1,7 @@
 const { fn, col, literal } = require('sequelize');
-const { sequelize, ChainBatch, ChainUnit } = require('./models');
+const { sequelize, ChainBatch, ChainBatchRequest, ChainUnit } = require('./models');
 const { newToken, newCoupon, serialOf, retailerQrUrl, consumerQrUrl, httpError } = require('./util');
-const { pairGridFor, pairSlot, pairBlock, PAGE_SIZE_NAMES, PAIR_ORIENTATIONS, MAX_BULK_PER_PAGE } = require('../utils/stickerLayout');
+const { pairGridFor, pairSlot, pairBlock, PAGE_SIZE_NAMES, PAIR_ORIENTATIONS, PAIR_MAX_PER_PAGE } = require('../utils/stickerLayout');
 const QRCode = require('qrcode');
 const { labelQrBuffer, streamQrLabelPdf } = require('../utils/stickerPdf');
 
@@ -84,6 +84,47 @@ const allotBatch = async ({ producerId, productId = null, batchNo: typedBatchNo 
   }
 };
 
+// A product's discount (Discounts tab) saved: its batches follow it, so a scan shows the current
+// discount. Every batch of the product gets the new max discount and expiry (the coupons' "valid
+// till"); every unit whose coupon nobody has claimed yet gets the new percentage, and units printed
+// without a coupon (the batch had no discount) get one now. Claimed coupons keep the discount they
+// were claimed at. Pending requests for the product follow too. Resolves to { batches, units }.
+const applyOfferToBatches = async ({ producerId, productId, discountPercent, validTill }, transaction) => {
+  if (!productId || !discountPercent) return { batches: 0, units: 0 };
+  const batches = await ChainBatch.findAll({ where: { producerId, productId }, attributes: ['id'], transaction });
+  await ChainBatchRequest.update(
+    { maxDiscountPercent: discountPercent, ...(validTill ? { expiryDate: validTill } : {}) },
+    { where: { producerId, productId, status: 'pending' }, transaction }
+  );
+  if (!batches.length) return { batches: 0, units: 0 };
+  const batchIds = batches.map((b) => b.id);
+  await ChainBatch.update({ maxDiscountPercent: discountPercent, ...(validTill ? { expiryDate: validTill } : {}) }, { where: { id: batchIds }, transaction });
+  const [units] = await ChainUnit.update({ discountPercent }, { where: { batchId: batchIds, couponClaimedBy: null }, transaction, silent: true });
+
+  // Coupons for units that have none, a few hundred at a time; a clash with an existing code is
+  // vanishingly rare, and that chunk is simply tried again with fresh codes.
+  const bare = await ChainUnit.findAll({ where: { batchId: batchIds, couponCode: null }, attributes: ['id'], transaction });
+  for (let i = 0; i < bare.length; i += 500) {
+    const ids = bare.slice(i, i + 500).map((u) => u.id);
+    for (let attempt = 0; ; attempt += 1) {
+      const codes = new Set();
+      while (codes.size < ids.length) codes.add(newCoupon());
+      const list = [...codes];
+      const cases = ids.map((id, k) => `WHEN ${Number(id)} THEN ${sequelize.escape(list[k])}`).join(' ');
+      try {
+        await sequelize.query(`UPDATE chain_units SET coupon_code = CASE id ${cases} END WHERE id IN (:ids) AND coupon_code IS NULL`, {
+          replacements: { ids },
+          transaction,
+        });
+        break;
+      } catch (err) {
+        if (err.name !== 'SequelizeUniqueConstraintError' || attempt >= 2) throw err;
+      }
+    }
+  }
+  return { batches: batchIds.length, units };
+};
+
 // Per batch: units sold, scans, coupons claimed, and the first and last unit IDs.
 const batchTotals = async (batchIds) => {
   if (!batchIds.length) return new Map();
@@ -107,24 +148,30 @@ const batchTotals = async (batchIds) => {
 const safeName = (s) => String(s).replace(/[^a-zA-Z0-9-]+/g, '_');
 
 // The batch's print layout (set by the OriginHash superadmin): paper, QR labels per page (even, so
-// pairs never split) and orientation. Default A4, 40 per page, horizontal.
-const PRINT_DEFAULTS = { pageSize: 'A4', perPage: 40, orientation: 'horizontal' };
-const layoutOf = (batch) => ({
-  pageSize: PAGE_SIZE_NAMES.includes(batch.printPageSize) ? batch.printPageSize : PRINT_DEFAULTS.pageSize,
-  perPage: batch.printPerPage || PRINT_DEFAULTS.perPage,
-  orientation: PAIR_ORIENTATIONS.includes(batch.printOrientation) ? batch.printOrientation : PRINT_DEFAULTS.orientation,
-});
+// pairs never split) and orientation. Per page: at most 42 horizontal / 48 vertical, which is also
+// the default. Default A4, horizontal, 42.
+const maxPerPage = (orientation) => PAIR_MAX_PER_PAGE[orientation] || PAIR_MAX_PER_PAGE.horizontal;
+const PRINT_DEFAULTS = { pageSize: 'A4', perPage: maxPerPage('horizontal'), orientation: 'horizontal' };
+const layoutOf = (batch) => {
+  const orientation = PAIR_ORIENTATIONS.includes(batch.printOrientation) ? batch.printOrientation : PRINT_DEFAULTS.orientation;
+  return {
+    pageSize: PAGE_SIZE_NAMES.includes(batch.printPageSize) ? batch.printPageSize : PRINT_DEFAULTS.pageSize,
+    perPage: Math.min(batch.printPerPage || maxPerPage(orientation), maxPerPage(orientation)),
+    orientation,
+  };
+};
 
 // { pageSize, perPage, orientation } from a request body, checked; resolves to the batch columns.
 const readPrintLayout = (body = {}) => {
   const pageSize = body.pageSize || PRINT_DEFAULTS.pageSize;
   if (!PAGE_SIZE_NAMES.includes(pageSize)) throw httpError(400, 'Choose A4 or A3.', 'pageSize');
-  const perPage = Number(body.perPage ?? PRINT_DEFAULTS.perPage);
-  if (!Number.isInteger(perPage) || perPage < 2 || perPage > MAX_BULK_PER_PAGE || perPage % 2) {
-    throw httpError(400, `QR codes per page: an even number from 2 to ${MAX_BULK_PER_PAGE}.`, 'perPage');
-  }
   const orientation = body.orientation || PRINT_DEFAULTS.orientation;
   if (!PAIR_ORIENTATIONS.includes(orientation)) throw httpError(400, 'Choose horizontal or vertical.', 'orientation');
+  const max = maxPerPage(orientation);
+  const perPage = Number(body.perPage ?? max);
+  if (!Number.isInteger(perPage) || perPage < 2 || perPage > max || perPage % 2) {
+    throw httpError(400, `QR codes per page (${orientation}): an even number from 2 to ${max}.`, 'perPage');
+  }
   return { printPageSize: pageSize, printPerPage: perPage, printOrientation: orientation };
 };
 
@@ -226,4 +273,4 @@ const sendBatchFile = async (req, res, batch, producerName) => {
   return streamBatchPdf(res, batch, producerName, units);
 };
 
-module.exports = { MAX_QUANTITY, PRINT_DEFAULTS, nextBatchNo, allotBatch, batchTotals, sendBatchFile, sendUnitQr, readPrintLayout };
+module.exports = { MAX_QUANTITY, PRINT_DEFAULTS, nextBatchNo, allotBatch, applyOfferToBatches, batchTotals, sendBatchFile, sendUnitQr, readPrintLayout };

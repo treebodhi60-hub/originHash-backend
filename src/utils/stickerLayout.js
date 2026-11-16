@@ -63,6 +63,8 @@ const gridFor = (pageSize, splitType, perPage) => {
 // grid has an even number of columns; vertical pairs are stacked (consumer on top, retailer below),
 // so it has an even number of rows. Same choice rules as gridFor. `pairCols` is pairs per row.
 const PAIR_ORIENTATIONS = ['horizontal', 'vertical'];
+// The most QR labels a page of pairs takes, per orientation — also the default.
+const PAIR_MAX_PER_PAGE = { horizontal: 42, vertical: 48 };
 const pairGridFor = (pageSize, perPage, orientation = 'horizontal') => {
   const [pw, ph] = PAGE_SIZES[pageSize] || PAGE_SIZES.A4;
   const { w, h } = stickerSize('bulk');
@@ -141,6 +143,7 @@ module.exports = {
   legacyPerPage,
   MAX_BULK_PER_PAGE,
   PAIR_ORIENTATIONS,
+  PAIR_MAX_PER_PAGE,
   pairGridFor,
   pairSlot,
   pairBlock,

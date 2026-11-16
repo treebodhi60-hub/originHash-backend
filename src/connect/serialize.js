@@ -100,7 +100,7 @@ const batchJson = (b, totals = {}) =>
     maxDiscountPercent: percent(b.maxDiscountPercent),
     expiryDate: b.expiryDate,
     notes: b.notes,
-    printLayout: { pageSize: b.printPageSize || 'A4', perPage: b.printPerPage || 40, orientation: b.printOrientation || 'horizontal' },
+    printLayout: { pageSize: b.printPageSize || 'A4', perPage: b.printPerPage || (b.printOrientation === 'vertical' ? 48 : 42), orientation: b.printOrientation || 'horizontal' },
     soldAccess: b.soldAccess || 'all',
     trackingEnabled: b.trackingEnabled !== false,
     chatEnabled: b.chatEnabled !== false,

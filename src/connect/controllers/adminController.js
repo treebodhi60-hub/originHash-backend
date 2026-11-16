@@ -14,8 +14,12 @@ const { MOBILE_REGEX, EMAIL_REGEX, USERNAME_REGEX, text, opt, bool, validDate, d
 // consumers (all of them existing app users), batch requests and QR batch allotment.
 
 const ROLES = ['distributor', 'retailer', 'consumer'];
-// Consumers: every ordinary app user (not an admin, producer user, distributor or retailer).
-const CONSUMER_WHERE = { isAdmin: false, isSuperAdmin: false, producerId: null, partnerRole: null };
+// Each tab lists only its own people. Distributors and retailers: accounts holding that role (never an
+// admin or a producer's user). Consumers: ordinary users with no trade role whose profile type is
+// Consumer (or not chosen yet) — not someone whose profile says farmer, supplier, retailer or
+// distributor without actually holding that role.
+const ORDINARY = { isAdmin: false, isSuperAdmin: false, producerId: null };
+const CONSUMER_WHERE = { ...ORDINARY, partnerRole: null, [Op.or]: [{ userType: 'consumer' }, { userType: null }] };
 
 const categoriesFrom = (value) =>
   [...new Set((Array.isArray(value) ? value : String(value || '').split(',')).map((c) => text(String(c), 60)).filter(Boolean))].slice(0, 20);
@@ -28,7 +32,7 @@ const overview = async (req, res) => {
     const [producers, accounts, batches, units, sold, pending] = await Promise.all([
       Producer.count(),
       User.findAll({
-        where: { partnerRole: { [Op.ne]: null } },
+        where: { ...ORDINARY, partnerRole: { [Op.ne]: null } },
         attributes: ['partnerRole', [fn('COUNT', col('id')), 'n']],
         group: ['partnerRole'],
         raw: true,
@@ -286,20 +290,24 @@ const updateProducerAdmin = async (req, res) => {
 
 // ---------- Distributors, retailers, consumers ----------
 // All of them are app users who log in with mobile + OTP. Distributors and retailers are marked by
-// users.partner_role, which only the superadmin sets; consumers are every other ordinary user.
+// users.partner_role (set by the superadmin, a producer, or retailer registration); consumers are
+// ordinary users whose profile type is Consumer (see CONSUMER_WHERE).
 
-const whereForRole = (role) => (role === 'consumer' ? CONSUMER_WHERE : { partnerRole: role });
+const whereForRole = (role) => (role === 'consumer' ? CONSUMER_WHERE : { ...ORDINARY, partnerRole: role });
 
-// GET /api/connect/admin/accounts?role=&search=
+// GET /api/connect/admin/accounts?role=&search=&scope=general
 const listAccounts = async (req, res) => {
   try {
     const role = ROLES.includes(req.query.role) ? req.query.role : 'retailer';
     const search = text(req.query.search, 100);
+    // Op.and: the consumer filter has its own Op.or, which a search must not replace.
     const where = {
-      ...whereForRole(role),
-      ...(search
-        ? { [Op.or]: ['mobile', 'name', 'businessName', 'city', 'email'].map((f) => ({ [f]: { [Op.like]: `%${search}%` } })) }
-        : {}),
+      [Op.and]: [
+        whereForRole(role),
+        // ?scope=general: retailers not associated with any producer.
+        ...(role === 'retailer' && req.query.scope === 'general' ? [{ partnerProducerId: null }] : []),
+        ...(search ? [{ [Op.or]: ['mobile', 'name', 'businessName', 'city', 'email'].map((f) => ({ [f]: { [Op.like]: `%${search}%` } })) }] : []),
+      ],
     };
     const accounts = await User.findAll({ where, include: accountInclude, order: [['createdAt', 'DESC']], limit: 1000 });
     return res.status(200).json({ accounts: accounts.map((a) => accountJson(a, req)) });

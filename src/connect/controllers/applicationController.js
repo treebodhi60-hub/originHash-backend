@@ -3,10 +3,11 @@ const { recordProfileVersion } = require('../../utils/profileHistory');
 const { EMAIL_REGEX, maskMobile, text, opt, fail, httpError } = require('../util');
 const { fileJson, identityDocFrom, storeFile } = require('../files');
 
-// Retailer self-registration: any signed-in ordinary user registers (name, email, shop, city and,
-// optionally, the producer they sell for) and is a general retailer at once. The OriginHash
-// superadmin approves the request — associating them with one producer — or rejects it, which
-// leaves them a general retailer.
+// Retailer self-registration: any signed-in ordinary user registers (name, email, shop, city, an
+// identity document and, optionally, the producer they sell for). That is only a request: they
+// become a retailer when the OriginHash superadmin approves it — as a general retailer (no producer)
+// or a retailer of one producer. Declined, they stay an ordinary customer. A general retailer can
+// also ask to be associated with a producer the same way.
 
 const applicationJson = (a, { forAdmin = false, req = null } = {}) =>
   a && {
@@ -76,9 +77,8 @@ const uploadIdentity = async (req, res) => {
 };
 
 // POST /api/connect/me/retailer-application { name, email?, businessName?, city, address?, producerId?, note?, identityDoc }
-// Registering makes the user a general retailer straight away (they can mark sold any batch open
-// to all retailers); OriginHash's approval associates them with a producer. An identity document
-// is required (unless they already gave one).
+// Saves their details and the request; nothing changes in what they may do until OriginHash
+// approves it. An identity document is required (unless they already gave one).
 const apply = async (req, res) => {
   try {
     if (!mayApply(req)) throw httpError(409, req.chainRole === 'retailer' ? 'You are already a retailer of a producer.' : "Your account can't register as a retailer.");
@@ -110,8 +110,6 @@ const apply = async (req, res) => {
           city,
           ...(address ? { address } : {}),
           ...(identity || {}),
-          partnerRole: 'retailer',
-          userType: 'retailer',
           profileCompleted: true,
         },
         { transaction }
@@ -125,7 +123,9 @@ const apply = async (req, res) => {
     await application.reload({ include: [producerInclude] });
     return res.status(201).json({
       message:
-        'You are now a general retailer: you can mark sold the products of batches open to all retailers. OriginHash will review your request to associate you with a producer.',
+        req.chainRole === 'retailer'
+          ? 'Request sent. OriginHash will review it and associate you with a producer.'
+          : 'Request sent. OriginHash will review it; once approved you are a retailer and can mark products sold.',
       application: applicationJson(application),
     });
   } catch (err) {
@@ -162,16 +162,16 @@ const pendingApplication = async (id, transaction) => {
 };
 
 // POST /api/connect/admin/retailer-applications/:id/approve { producerId?, businessName?, city?, address? }
-// Makes the applicant a retailer associated with the producer.
+// Makes the applicant a retailer: of the chosen producer, or a general retailer (producerId empty).
+// Without producerId at all, the producer they asked for (if any).
 const approve = async (req, res) => {
   try {
     const body = req.body || {};
     const result = await sequelize.transaction(async (transaction) => {
       const application = await pendingApplication(req.params.id, transaction);
-      const producerId = Number(body.producerId) || application.producerId;
-      if (!producerId) throw httpError(400, 'Choose the producer this retailer sells for.', 'producerId');
-      const producer = await Producer.findByPk(producerId, { attributes: ['id', 'name', 'isBlocked'], transaction });
-      if (!producer) throw httpError(400, 'Choose one of the producers.', 'producerId');
+      const producerId = body.producerId === undefined ? application.producerId : Number(body.producerId) || null;
+      const producer = producerId ? await Producer.findByPk(producerId, { attributes: ['id', 'name', 'isBlocked'], transaction }) : null;
+      if (producerId && !producer) throw httpError(400, 'Choose one of the producers.', 'producerId');
       const user = await User.findByPk(application.userId, { transaction, lock: transaction.LOCK.UPDATE });
       if (!user) throw httpError(404, 'The applicant no longer has an account.');
       if (user.isAdmin || user.isSuperAdmin || user.producerId) throw httpError(409, 'The applicant is now an admin or producer account.');
@@ -180,14 +180,14 @@ const approve = async (req, res) => {
       const city = opt(body.city ?? application.city, 120);
       const address = opt(body.address ?? application.address, 255);
       await user.update(
-        { partnerRole: 'retailer', userType: 'retailer', partnerProducerId: producer.id, businessName, city, ...(address ? { address } : {}), profileCompleted: true },
+        { partnerRole: 'retailer', userType: 'retailer', partnerProducerId: producer ? producer.id : null, businessName, city, ...(address ? { address } : {}), profileCompleted: true },
         { transaction }
       );
       await recordProfileVersion(user, { source: 'admin', changedBy: req.user.id, transaction });
       await application.update(
         {
           status: 'approved',
-          producerId: producer.id,
+          producerId: producer ? producer.id : null,
           businessName: businessName || application.businessName,
           city,
           address,
@@ -199,8 +199,9 @@ const approve = async (req, res) => {
       );
       return { application, user, producer };
     });
+    const who = result.user.businessName || result.user.name || maskMobile(result.user.mobile);
     return res.status(200).json({
-      message: `${result.user.businessName || result.user.name || maskMobile(result.user.mobile)} is now a retailer of ${result.producer.name}.`,
+      message: result.producer ? `${who} is now a retailer of ${result.producer.name}.` : `${who} is now a general retailer (not associated with any producer).`,
     });
   } catch (err) {
     return fail(res, err, 'Could not approve the application.');
@@ -210,14 +211,20 @@ const approve = async (req, res) => {
 // POST /api/connect/admin/retailer-applications/:id/reject { decisionNote? }
 const reject = async (req, res) => {
   try {
-    await sequelize.transaction(async (transaction) => {
+    const user = await sequelize.transaction(async (transaction) => {
       const application = await pendingApplication(req.params.id, transaction);
       await application.update(
         { status: 'rejected', decidedBy: req.user.id, decidedAt: new Date(), decisionNote: opt(req.body?.decisionNote, 500) },
         { transaction }
       );
+      return User.findByPk(application.userId, { attributes: ['partnerRole'], transaction });
     });
-    return res.status(200).json({ message: 'Request declined. They stay a general retailer, not associated with any producer.' });
+    return res.status(200).json({
+      message:
+        user?.partnerRole === 'retailer'
+          ? 'Request declined. They stay a general retailer, not associated with any producer.'
+          : 'Request declined. They stay a customer and are not a retailer.',
+    });
   } catch (err) {
     return fail(res, err, 'Could not reject the application.');
   }
